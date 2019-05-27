@@ -21,11 +21,18 @@ fn send_req(url: &str, bytes: Vec<u8>) -> impl Future<Item = Response, Error = S
 fn handle_response(resp: Response) -> impl Future<Item = (), Error = String> {
     trace!("HTTP response {:?}", &resp);
     let status = resp.status();
-    let body = resp.into_body();
+    let mut body = resp.into_body();
     futures::future::result(match status {
         StatusCode::OK => Ok(()),
         StatusCode::NO_CONTENT => Err(String::from("already well-formatted")),
-        other => Err(format!("unexpected status: {:?}", other)),
+        other => {
+            if let Ok(contents) = body.by_ref().concat2().wait() {
+                debug!("Contents: {:?}", contents);
+            } else {
+                debug!("Couldn't read response contents.");
+            }
+            Err(format!("unexpected status: {:?}", other))
+        }
     })
     .and_then(|_: ()| handle_reformat(body))
 }
@@ -46,7 +53,7 @@ fn handle_reformat(
 
 fn main() {
     let matches = App::new("Black Client")
-        .version("0.1")
+        .version(crate_version!())
         .arg(
             Arg::with_name("verbose")
                 .short("v")
@@ -83,7 +90,7 @@ fn main() {
         .unwrap();
 
     debug!(
-        "{} connecting to {}",
+        "blackc version {} connecting to {}",
         crate_version!(),
         matches.value_of("url").unwrap()
     );
