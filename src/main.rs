@@ -1,13 +1,13 @@
-use clap::{App, Arg};
+use clap::{crate_version, App, Arg};
 use futures::future::join_all;
 use futures::{Future, Stream};
-use reqwest::r#async::{Decoder, Response};
+use log::{debug, error, info, trace};
+use reqwest::r#async::Response;
 use reqwest::StatusCode;
 use tokio::codec::{FramedWrite, LinesCodec};
 use tokio::fs;
 
-fn send_req(bytes: Vec<u8>) -> impl Future<Item = Response, Error = String> {
-    let url = "http://localhost:8000/";
+fn send_req(url: &str, bytes: Vec<u8>) -> impl Future<Item = Response, Error = String> {
     let client = reqwest::r#async::Client::new();
     client
         .post(url)
@@ -19,6 +19,7 @@ fn send_req(bytes: Vec<u8>) -> impl Future<Item = Response, Error = String> {
 }
 
 fn handle_response(resp: Response) -> impl Future<Item = (), Error = String> {
+    trace!("HTTP response {:?}", &resp);
     let status = resp.status();
     let body = resp.into_body();
     futures::future::result(match status {
@@ -29,7 +30,9 @@ fn handle_response(resp: Response) -> impl Future<Item = (), Error = String> {
     .and_then(|_: ()| handle_reformat(body))
 }
 
-fn handle_reformat(body: Decoder) -> impl Future<Item = (), Error = String> {
+fn handle_reformat(
+    body: impl Stream<Item = reqwest::r#async::Chunk, Error = reqwest::Error>,
+) -> impl Future<Item = (), Error = String> {
     let codec = LinesCodec::new_with_max_length(2048);
     let stdout = FramedWrite::new(tokio::io::stdout(), codec);
     let bodystr = body
@@ -47,35 +50,59 @@ fn main() {
         .arg(
             Arg::with_name("verbose")
                 .short("v")
-                .help("Outputs debug logs to stderr"),
+                .multiple(true)
+                .help("Increase logging verbosity"),
+        )
+        .arg(Arg::with_name("quiet").short("q").help("Silence all logs"))
+        .arg(
+            Arg::with_name("url")
+                .required(true)
+                .long("url")
+                .short("u")
+                .takes_value(true)
+                .help("URL of a running `blackd` server"),
         )
         .arg(
             Arg::with_name("src")
                 .help("Input source to be formatted")
+                .takes_value(true)
                 .default_value(".")
                 .multiple(true)
                 .empty_values(false),
         )
         .get_matches();
-    if matches.is_present("verbose") {
-        eprintln!("Debug mode on");
-    }
 
-    let futs = matches
-        .values_of("src")
-        .unwrap()
+    let verbosity = matches.occurrences_of("verbose") as usize;
+    let quiet = matches.is_present("quiet");
+    let srcs = matches.values_of("src").unwrap();
+    stderrlog::new()
+        .module(module_path!())
+        .quiet(quiet)
+        .verbosity(verbosity)
+        .init()
+        .unwrap();
+
+    debug!(
+        "{} connecting to {}",
+        crate_version!(),
+        matches.value_of("url").unwrap()
+    );
+    debug!("Inputs: {:?}", &srcs);
+
+    let futs = srcs
         .map(|src| {
-            let fname = String::from(src);
-            let fname2 = String::from(src);
+            let fname = src.to_string();
+            let fname2 = src.to_string();
+            let url = matches.value_of("url").unwrap().to_string();
             fs::read(fname.to_string())
                 .map_err(|err| {
                     // TODO: handle directory case
                     format!("Error opening file: {:?}", err)
                 })
-                .and_then(send_req)
+                .and_then(move |x| send_req(&url, x))
                 .and_then(handle_response)
-                .map_err(move |err| eprintln!("{}: {}", fname, err))
-                .map(move |_| eprintln!("{}: reformatted", fname2))
+                .map_err(move |err| error!("{}: {}", &fname, &err))
+                .map(move |_| info!("{}: reformatted", &fname2))
                 .or_else(|_| Ok(()))
         })
         .collect::<Vec<_>>();
