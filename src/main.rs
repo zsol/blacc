@@ -1,7 +1,9 @@
 use clap::{crate_version, App, Arg};
 use futures::stream;
 use futures::{Future, Stream};
+use lazy_static::lazy_static;
 use log::{debug, error, info, trace};
+use regex::Regex;
 use reqwest::r#async::Response;
 use reqwest::StatusCode;
 use tokio::codec::{FramedWrite, LinesCodec};
@@ -53,14 +55,54 @@ fn handle_reformat(
 }
 
 fn collect_sources(dir: &str) -> impl Stream<Item = String, Error = ()> {
-    futures::stream::iter_ok(WalkDir::new(dir).into_iter().filter_map(|entry| {
-        if let Ok(entry) = entry {
-            if entry.file_type().is_file() {
-                return Some(entry.path().to_str().unwrap().to_owned());
-            }
-        }
-        None
-    }))
+    futures::stream::iter_ok(
+        WalkDir::new(dir)
+            .into_iter()
+            .filter_entry(|entry| {
+                entry
+                    .path()
+                    .to_str()
+                    .map(|path| {
+                        let ret = !matches_exclude(path);
+                        if !ret {
+                            debug!("Ignoring {} because it matches exclude regex", path);
+                        }
+                        ret
+                    })
+                    .unwrap_or(false)
+            })
+            .filter_map(|entry| {
+                if let Ok(entry) = entry {
+                    if entry.file_type().is_file() {
+                        if let Some(path) = entry.path().to_str() {
+                            if matches_include(path) {
+                                return Some(path.to_owned());
+                            } else {
+                                debug!("Ignoring {} because it doesn't match include regex", path);
+                            }
+                        }
+                    }
+                }
+                None
+            }),
+    )
+}
+
+fn matches_include(text: &str) -> bool {
+    lazy_static! {
+        static ref INCLUDE_REGEX: Regex = Regex::new(r"\.pyi?$").unwrap();
+    }
+    INCLUDE_REGEX.is_match(text)
+}
+
+fn matches_exclude(text: &str) -> bool {
+    lazy_static! {
+        static ref EXCLUDE_REGEX: Regex = Regex::new(
+            r"/(\.eggs|\.git|\.hg|\.mypy_cache|\.nox|\.tox|\.venv|_build|buck-out|build|dist)/"
+        )
+        .unwrap();
+    }
+    EXCLUDE_REGEX.is_match(text)
 }
 
 fn main() {
