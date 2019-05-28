@@ -93,13 +93,15 @@ fn main() {
             .get_matches(),
     );
 
-    // TODO: cant figure out how to move this into futs
-    let matches = Box::leak(matches);
-
     let verbosity = matches.occurrences_of("verbose") as usize;
     let quiet = matches.is_present("quiet");
     let url = matches.value_of("url").unwrap().to_owned();
-    let srcs = matches.values_of("src").unwrap();
+    let srcs: Vec<String> = matches
+        .values_of("src")
+        .unwrap()
+        .map(|x| x.to_string())
+        .collect();
+
     stderrlog::new()
         .module(module_path!())
         .quiet(quiet)
@@ -107,10 +109,11 @@ fn main() {
         .init()
         .unwrap();
 
-    debug!("blackc version {} connecting to {}", crate_version!(), url,);
+    debug!("blackc version {} connecting to {}", crate_version!(), url);
     debug!("Inputs: {:?}", &srcs);
 
-    let futs = stream::iter_ok(srcs.map(collect_sources))
+    let futs = stream::iter_ok(srcs)
+        .map(|x| collect_sources(&x))
         .flatten()
         .and_then(move |src| {
             let fname = src.to_string();
