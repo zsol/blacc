@@ -1,7 +1,6 @@
 use clap::{crate_version, App, Arg};
 use futures::stream;
 use futures::{Future, Stream};
-use lazy_static::lazy_static;
 use log::{debug, error, info, trace};
 use regex::Regex;
 use reqwest::r#async::Response;
@@ -9,6 +8,10 @@ use reqwest::StatusCode;
 use tokio::codec::{FramedWrite, LinesCodec};
 use tokio::fs;
 use walkdir::WalkDir;
+
+static DEFAULT_EXCLUDE: &str =
+    r"/(\.eggs|\.git|\.hg|\.mypy_cache|\.nox|\.tox|\.venv|_build|buck-out|build|dist)/";
+static DEFAULT_INCLUDE: &str = r"\.pyi?$";
 
 fn send_req(url: &str, bytes: Vec<u8>) -> impl Future<Item = Response, Error = String> {
     let client = reqwest::r#async::Client::new();
@@ -54,16 +57,20 @@ fn handle_reformat(
         .map(|_| {})
 }
 
-fn collect_sources(dir: &str) -> impl Stream<Item = String, Error = ()> {
+fn collect_sources(
+    exclude: Regex,
+    include: Regex,
+    dir: &str,
+) -> impl Stream<Item = String, Error = ()> {
     futures::stream::iter_ok(
         WalkDir::new(dir)
             .into_iter()
-            .filter_entry(|entry| {
+            .filter_entry(move |entry| {
                 entry
                     .path()
                     .to_str()
                     .map(|path| {
-                        let ret = !matches_exclude(path);
+                        let ret = !exclude.is_match(path);
                         if !ret {
                             debug!("Ignoring {} because it matches exclude regex", path);
                         }
@@ -71,11 +78,11 @@ fn collect_sources(dir: &str) -> impl Stream<Item = String, Error = ()> {
                     })
                     .unwrap_or(false)
             })
-            .filter_map(|entry| {
+            .filter_map(move |entry| {
                 if let Ok(entry) = entry {
                     if entry.file_type().is_file() {
                         if let Some(path) = entry.path().to_str() {
-                            if matches_include(path) {
+                            if include.is_match(path) {
                                 return Some(path.to_owned());
                             } else {
                                 debug!("Ignoring {} because it doesn't match include regex", path);
@@ -86,23 +93,6 @@ fn collect_sources(dir: &str) -> impl Stream<Item = String, Error = ()> {
                 None
             }),
     )
-}
-
-fn matches_include(text: &str) -> bool {
-    lazy_static! {
-        static ref INCLUDE_REGEX: Regex = Regex::new(r"\.pyi?$").unwrap();
-    }
-    INCLUDE_REGEX.is_match(text)
-}
-
-fn matches_exclude(text: &str) -> bool {
-    lazy_static! {
-        static ref EXCLUDE_REGEX: Regex = Regex::new(
-            r"/(\.eggs|\.git|\.hg|\.mypy_cache|\.nox|\.tox|\.venv|_build|buck-out|build|dist)/"
-        )
-        .unwrap();
-    }
-    EXCLUDE_REGEX.is_match(text)
 }
 
 fn main() {
@@ -125,6 +115,22 @@ fn main() {
                     .help("URL of a running `blackd` server"),
             )
             .arg(
+                Arg::with_name("exclude")
+                    .long("exclude")
+                    .help("A regular expression that matches files and directories that should be excluded on recursive searches")
+                    .long_help("An empty value means no paths are excluded. Exclusions are calculated first, inclusions later.")
+                    .takes_value(true)
+                    .default_value(DEFAULT_EXCLUDE)
+            )
+            .arg(
+                Arg::with_name("include")
+                    .long("include")
+                    .help("A regular expression that matches files and directories that should be included on recursive searches")
+                    .long_help("An empty value means all files are included. Exclusions are calculated first, inclusions later.")
+                    .takes_value(true)
+                    .default_value(DEFAULT_INCLUDE)
+            )
+            .arg(
                 Arg::with_name("src")
                     .help("Input source to be formatted")
                     .takes_value(true)
@@ -138,6 +144,8 @@ fn main() {
     let verbosity = matches.occurrences_of("verbose") as usize;
     let quiet = matches.is_present("quiet");
     let url = matches.value_of("url").unwrap().to_owned();
+    let exclude = Regex::new(matches.value_of("exclude").unwrap()).unwrap();
+    let include = Regex::new(matches.value_of("include").unwrap()).unwrap();
     let srcs: Vec<String> = matches
         .values_of("src")
         .unwrap()
@@ -155,7 +163,7 @@ fn main() {
     debug!("Inputs: {:?}", &srcs);
 
     let futs = stream::iter_ok(srcs)
-        .map(|x| collect_sources(&x))
+        .map(move |x| collect_sources(exclude.to_owned(), include.to_owned(), &x))
         .flatten()
         .and_then(move |src| {
             let fname = src.to_string();
