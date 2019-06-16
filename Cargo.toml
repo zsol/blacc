@@ -1,5 +1,5 @@
 [package]
-name = "blackc"
+name = "blacc"
 version = "0.1.0"
 authors = ["Zsolt Dollenstein <zsol.zsol@gmail.com>"]
 edition = "2018"

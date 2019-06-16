@@ -228,14 +228,14 @@ fn main() {
         .init()
         .unwrap();
     
-    debug!("blackc version {} connecting to {}", crate_version!(), config.url);
-    debug!("Inputs: {:?}", &config.srcs);
-
     let exclude = Regex::new(black_config.exclude.as_ref().unwrap()).unwrap();
     let include = Regex::new(black_config.include.as_ref().unwrap()).unwrap();
     let srcs = config.srcs;
     let url = Arc::new(config.url);
     let black_config = Arc::new(black_config);
+
+    debug!("blacc version {} connecting to {}", crate_version!(), url);
+    debug!("Inputs: {:?}", &srcs);
 
     let futs = stream::iter_ok(srcs)
         .map(move |x| collect_sources(exclude.to_owned(), include.to_owned(), &x))
