@@ -5,27 +5,48 @@ use log::{debug, error, info, trace};
 use regex::Regex;
 use reqwest::r#async::Response;
 use reqwest::StatusCode;
+use serde::Deserialize;
 use tokio::codec::{FramedWrite, LinesCodec};
 use tokio::fs;
 use walkdir::WalkDir;
+use std::sync::Arc;
+use std::str::FromStr;
 
 static DEFAULT_EXCLUDE: &str =
     r"/(\.eggs|\.git|\.hg|\.mypy_cache|\.nox|\.tox|\.venv|_build|buck-out|build|dist)/";
 static DEFAULT_INCLUDE: &str = r"\.pyi?$";
 
-fn send_req(url: &str, bytes: Vec<u8>) -> impl Future<Item = Response, Error = String> {
+fn send_req(url: &str, config: &BlackConfig, bytes: Vec<u8>) -> impl Future<Item = Response, Error = String> {
     let client = reqwest::r#async::Client::new();
-    client
+    let mut req = client
         .post(url)
         .body(bytes)
-        .header("X-Protocol-Version", "1")
+        .header("X-Protocol-Version", "1");
+    
+    if config.pyi.unwrap_or(false) {
+        req = req.header("X-Python-Variant", "pyi");
+    }
+
+    if let Some(version) = &config.target_version {
+        req = req.header("X-Python-Variant", version.to_owned());
+    }
+
+    if let Some(true) = config.skip_string_normalization {
+        req = req.header("X-Skip-String-Normalization", "true")
+    }
+
+    if let Some(length) = config.line_length {
+        req = req.header("X-Line-Length", length)
+    }
+
+    trace!("Sending HTTP {:?}", &req);
+    req
         .send()
         .map_err(|err| format!("Error sending format request: {:?}", err))
-
 }
 
 fn handle_response(resp: Response) -> impl Future<Item = (), Error = String> {
-    trace!("HTTP response {:?}", &resp);
+    trace!("HTTP {:?}", &resp);
     let status = resp.status();
     let mut body = resp.into_body();
     futures::future::result(match status {
@@ -95,17 +116,35 @@ fn collect_sources(
     )
 }
 
-fn main() {
-    let matches = Box::new(
+#[derive(Default)]
+#[derive(Deserialize)]
+struct BlackConfig {
+    exclude: Option<String>,
+    include: Option<String>,
+    line_length: Option<u64>,
+    target_version: Option<String>,
+    skip_string_normalization: Option<bool>,
+    pyi: Option<bool>,
+    fast: Option<bool>,
+}
+
+struct BlaccConfig {
+    url: String,
+    quiet: bool,
+    verbosity: usize,
+    srcs: Vec<String>,
+}
+
+fn read_config(path: String) -> Result<BlackConfig, String> {
+    std::fs::read_to_string(path).map_err(|e| format!("{}", e)).and_then(|contents| toml::from_str(&contents).map_err(|e| format!("{}", e)))
+}
+
+fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
+    let matches =
         App::new("Black Client")
             .version(crate_version!())
-            .arg(
-                Arg::with_name("verbose")
-                    .short("v")
-                    .multiple(true)
-                    .help("Increase logging verbosity"),
-            )
-            .arg(Arg::with_name("quiet").short("q").help("Silence all logs"))
+            .arg(Arg::with_name("verbose").short("-v").help("Set verbosity").multiple(true))
+            .arg(Arg::with_name("quiet").short("q").help("Silence all logs").conflicts_with("quiet"))
             .arg(
                 Arg::with_name("url")
                     .required(true)
@@ -130,6 +169,17 @@ fn main() {
                     .takes_value(true)
                     .default_value(DEFAULT_INCLUDE)
             )
+            .arg(Arg::with_name("fast").long("fast").help("Skip sanity checks").conflicts_with("safe"))
+            .arg(Arg::with_name("safe").long("safe").help("Run sanity checks after formatting").conflicts_with("fast"))
+            .arg(Arg::with_name("skip-string-normalization").short("S").long("skip-string-normalization").help("Don't normalize string quotes or prefixes"))
+            .arg(Arg::with_name("target-version").short("t").long("target-version").takes_value(true).use_delimiter(true).help("Python versions that should be supported by Black's output.").possible_values(&["py27", "py33", "py34", "py35", "py36", "py37", "py38"]))
+            .arg(Arg::with_name("line-length").short("l").long("line-length").takes_value(true).default_value("88").help("How many characters per line to allow"))
+            .arg(
+                Arg::with_name("config-file")
+                    .help("Path to TOML file containing black's configuration")
+                    .long("config-file")
+                    .takes_value(true),
+            )
             .arg(
                 Arg::with_name("src")
                     .help("Input source to be formatted")
@@ -138,44 +188,70 @@ fn main() {
                     .multiple(true)
                     .empty_values(false),
             )
-            .get_matches(),
-    );
-
-    let verbosity = matches.occurrences_of("verbose") as usize;
-    let quiet = matches.is_present("quiet");
-    let url = matches.value_of("url").unwrap().to_owned();
-    let exclude = Regex::new(matches.value_of("exclude").unwrap()).unwrap();
-    let include = Regex::new(matches.value_of("include").unwrap()).unwrap();
+            .get_matches();
+    let config_file = matches.value_of("config-file").map(|x| x.to_owned());
+    let mut config = config_file.map(|x| read_config(x).unwrap()).unwrap_or(Default::default());
     let srcs: Vec<String> = matches
         .values_of("src")
         .unwrap()
         .map(|x| x.to_string())
         .collect();
 
+    if let Some(exclude) = matches.value_of("exclude") {
+        config.exclude = Some(String::from(exclude));
+    }
+    if let Some(include) = matches.value_of("include") {
+        config.include = Some(String::from(include));
+    }
+    if let Some(length) = matches.value_of("line-length") {
+        config.line_length = Some(u64::from_str(length).unwrap());
+    }
+    if matches.is_present("fast") {
+        config.fast = Some(true);
+    }
+
+    Some((BlaccConfig {
+        url: String::from(matches.value_of("url")?),
+        quiet: matches.is_present("quiet"),
+        verbosity: matches.occurrences_of("verbose") as usize,
+        srcs,
+    }, config))
+}
+
+fn main() {
+
+    let (config, black_config) = make_config().unwrap();
     stderrlog::new()
         .module(module_path!())
-        .quiet(quiet)
-        .verbosity(verbosity)
+        .quiet(config.quiet)
+        .verbosity(config.verbosity)
         .init()
         .unwrap();
+    
+    debug!("blackc version {} connecting to {}", crate_version!(), config.url);
+    debug!("Inputs: {:?}", &config.srcs);
 
-    debug!("blackc version {} connecting to {}", crate_version!(), url);
-    debug!("Inputs: {:?}", &srcs);
+    let exclude = Regex::new(black_config.exclude.as_ref().unwrap()).unwrap();
+    let include = Regex::new(black_config.include.as_ref().unwrap()).unwrap();
+    let srcs = config.srcs;
+    let url = Arc::new(config.url);
+    let black_config = Arc::new(black_config);
 
     let futs = stream::iter_ok(srcs)
         .map(move |x| collect_sources(exclude.to_owned(), include.to_owned(), &x))
         .flatten()
         .and_then(move |src| {
-            let fname = src.to_string();
-            let fname2 = src.to_string();
-            let url = url.to_owned();
+            let fname = Arc::new(src.to_string());
+            let fname2 = Arc::clone(&fname);
+            let url = Arc::clone(&url);
+            let black_config = Arc::clone(&black_config);
+
             fs::read(fname.to_string())
                 .map_err(|err| format!("Error opening file: {:?}", err))
-                .and_then(move |x| send_req(&url, x))
+                .and_then(move |x| send_req(&url, &black_config, x))
                 .and_then(handle_response)
                 .map_err(move |err| error!("{}: {}", &fname, &err))
                 .map(move |_| info!("{}: reformatted", &fname2))
-                .or_else(|_| Ok(()))
         })
         .collect()
         .map(|_| {});
