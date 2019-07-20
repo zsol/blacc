@@ -190,7 +190,7 @@ fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
             )
             .get_matches();
     let config_file = matches.value_of("config-file").map(|x| x.to_owned());
-    let mut config = config_file.map(|x| read_config(x).unwrap()).unwrap_or(Default::default());
+    let mut config = config_file.map(|x| read_config(x).unwrap()).unwrap_or_default();
     let srcs: Vec<String> = matches
         .values_of("src")
         .unwrap()
