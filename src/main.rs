@@ -6,23 +6,27 @@ use regex::Regex;
 use reqwest::r#async::Response;
 use reqwest::StatusCode;
 use serde::Deserialize;
+use std::str::FromStr;
+use std::sync::Arc;
 use tokio::codec::{FramedWrite, LinesCodec};
 use tokio::fs;
 use walkdir::WalkDir;
-use std::sync::Arc;
-use std::str::FromStr;
 
 static DEFAULT_EXCLUDE: &str =
     r"/(\.eggs|\.git|\.hg|\.mypy_cache|\.nox|\.tox|\.venv|_build|buck-out|build|dist)/";
 static DEFAULT_INCLUDE: &str = r"\.pyi?$";
 
-fn send_req(url: &str, config: &BlackConfig, bytes: Vec<u8>) -> impl Future<Item = Response, Error = String> {
+fn send_req(
+    url: &str,
+    config: &BlackConfig,
+    bytes: Vec<u8>,
+) -> impl Future<Item = Response, Error = String> {
     let client = reqwest::r#async::Client::new();
     let mut req = client
         .post(url)
         .body(bytes)
         .header("X-Protocol-Version", "1");
-    
+
     if config.pyi.unwrap_or(false) {
         req = req.header("X-Python-Variant", "pyi");
     }
@@ -40,8 +44,7 @@ fn send_req(url: &str, config: &BlackConfig, bytes: Vec<u8>) -> impl Future<Item
     }
 
     trace!("Sending HTTP {:?}", &req);
-    req
-        .send()
+    req.send()
         .map_err(|err| format!("Error sending format request: {:?}", err))
 }
 
@@ -116,8 +119,7 @@ fn collect_sources(
     )
 }
 
-#[derive(Default)]
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct BlackConfig {
     exclude: Option<String>,
     include: Option<String>,
@@ -136,7 +138,9 @@ struct BlaccConfig {
 }
 
 fn read_config(path: String) -> Result<BlackConfig, String> {
-    std::fs::read_to_string(path).map_err(|e| format!("{}", e)).and_then(|contents| toml::from_str(&contents).map_err(|e| format!("{}", e)))
+    std::fs::read_to_string(path)
+        .map_err(|e| format!("{}", e))
+        .and_then(|contents| toml::from_str(&contents).map_err(|e| format!("{}", e)))
 }
 
 fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
@@ -190,7 +194,9 @@ fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
             )
             .get_matches();
     let config_file = matches.value_of("config-file").map(|x| x.to_owned());
-    let mut config = config_file.map(|x| read_config(x).unwrap()).unwrap_or_default();
+    let mut config = config_file
+        .map(|x| read_config(x).unwrap())
+        .unwrap_or_default();
     let srcs: Vec<String> = matches
         .values_of("src")
         .unwrap()
@@ -210,16 +216,18 @@ fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
         config.fast = Some(true);
     }
 
-    Some((BlaccConfig {
-        url: String::from(matches.value_of("url")?),
-        quiet: matches.is_present("quiet"),
-        verbosity: matches.occurrences_of("verbose") as usize,
-        srcs,
-    }, config))
+    Some((
+        BlaccConfig {
+            url: String::from(matches.value_of("url")?),
+            quiet: matches.is_present("quiet"),
+            verbosity: matches.occurrences_of("verbose") as usize,
+            srcs,
+        },
+        config,
+    ))
 }
 
 fn main() {
-
     let (config, black_config) = make_config().unwrap();
     stderrlog::new()
         .module(module_path!())
@@ -227,7 +235,7 @@ fn main() {
         .verbosity(config.verbosity)
         .init()
         .unwrap();
-    
+
     let exclude = Regex::new(black_config.exclude.as_ref().unwrap()).unwrap();
     let include = Regex::new(black_config.include.as_ref().unwrap()).unwrap();
     let srcs = config.srcs;
