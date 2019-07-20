@@ -1,4 +1,5 @@
 use clap::{crate_version, App, Arg};
+use error_chain::error_chain;
 use futures::stream;
 use futures::{Future, Stream};
 use log::{debug, error, info, trace};
@@ -12,6 +13,36 @@ use tokio::codec::{FramedWrite, LinesCodec};
 use tokio::fs;
 use walkdir::WalkDir;
 
+error_chain! {
+    foreign_links {
+        Io(std::io::Error);
+        Reqwest(reqwest::Error);
+    }
+}
+type SFuture<T> = Box<Future<Item = T, Error = Error> + Send>;
+
+trait FutureChainErr<T> {
+    fn chain_err<F, E>(self, callback: F) -> SFuture<T>
+    where
+        F: FnOnce() -> E + 'static + Send,
+        E: Into<ErrorKind>;
+}
+
+impl<F> FutureChainErr<F::Item> for F
+where
+    F: Future + 'static + Send,
+    F::Error: std::error::Error + Send + 'static,
+    F::Item: Send,
+{
+    fn chain_err<C, E>(self, callback: C) -> SFuture<F::Item>
+    where
+        C: FnOnce() -> E + 'static + Send,
+        E: Into<ErrorKind>,
+    {
+        Box::new(self.then(|r| r.chain_err(callback)))
+    }
+}
+
 static DEFAULT_EXCLUDE: &str =
     r"/(\.eggs|\.git|\.hg|\.mypy_cache|\.nox|\.tox|\.venv|_build|buck-out|build|dist)/";
 static DEFAULT_INCLUDE: &str = r"\.pyi?$";
@@ -20,7 +51,7 @@ fn send_req(
     url: &str,
     config: &BlackConfig,
     bytes: Vec<u8>,
-) -> impl Future<Item = Response, Error = String> {
+) -> impl Future<Item = Response, Error = Error> {
     let client = reqwest::r#async::Client::new();
     let mut req = client
         .post(url)
@@ -44,40 +75,41 @@ fn send_req(
     }
 
     trace!("Sending HTTP {:?}", &req);
-    req.send()
-        .map_err(|err| format!("Error sending format request: {:?}", err))
+    req.send().chain_err(|| "Error sending format request")
 }
 
-fn handle_response(resp: Response) -> impl Future<Item = (), Error = String> {
+fn handle_response(resp: Response) -> SFuture<()> {
     trace!("HTTP {:?}", &resp);
     let status = resp.status();
     let mut body = resp.into_body();
-    futures::future::result(match status {
-        StatusCode::OK => Ok(()),
-        StatusCode::NO_CONTENT => Err(String::from("already well-formatted")),
+    match status {
+        StatusCode::OK => Box::new(handle_reformat(body)),
+        StatusCode::NO_CONTENT => Box::new(futures::future::ok(())),
         other => {
             if let Ok(contents) = body.by_ref().concat2().wait() {
                 debug!("Contents: {:?}", contents);
             } else {
                 debug!("Couldn't read response contents.");
             }
-            Err(format!("unexpected status: {:?}", other))
+            Box::new(futures::future::err(Error::from(format!(
+                "unexpected status: {:?}",
+                other
+            ))))
         }
-    })
-    .and_then(|_: ()| handle_reformat(body))
+    }
 }
 
 fn handle_reformat(
-    body: impl Stream<Item = reqwest::r#async::Chunk, Error = reqwest::Error>,
-) -> impl Future<Item = (), Error = String> {
+    body: impl Stream<Item = reqwest::r#async::Chunk, Error = reqwest::Error> + 'static + Send,
+) -> impl Future<Item = (), Error = Error> {
     let codec = LinesCodec::new_with_max_length(2048);
     let stdout = FramedWrite::new(tokio::io::stdout(), codec);
     let bodystr = body
         .and_then(|chunk| Ok(String::from_utf8(chunk.to_vec()).unwrap()))
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err));
+        .map_err(Error::from);
     bodystr
         .forward(stdout)
-        .map_err(|err| format!("Error writing output: {:?}", err))
+        .chain_err(|| "Error writing output")
         .map(|_| {})
 }
 
@@ -137,10 +169,10 @@ struct BlaccConfig {
     srcs: Vec<String>,
 }
 
-fn read_config(path: String) -> Result<BlackConfig, String> {
+fn read_config(path: String) -> Result<BlackConfig> {
     std::fs::read_to_string(path)
-        .map_err(|e| format!("{}", e))
-        .and_then(|contents| toml::from_str(&contents).map_err(|e| format!("{}", e)))
+        .chain_err(|| "Unable to read config file")
+        .and_then(|contents| toml::from_str(&contents).chain_err(|| "Unable to parse TOML"))
 }
 
 fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
@@ -227,17 +259,29 @@ fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
     ))
 }
 
-fn main() {
-    let (config, black_config) = make_config().unwrap();
-    stderrlog::new()
+fn run() -> Result<()> {
+    let (config, black_config) = make_config().chain_err(|| "Unable to set up configuration")?;
+    let logging = stderrlog::new()
         .module(module_path!())
         .quiet(config.quiet)
         .verbosity(config.verbosity)
         .init()
-        .unwrap();
+        .chain_err(|| "Unable to set up logging");
 
-    let exclude = Regex::new(black_config.exclude.as_ref().unwrap()).unwrap();
-    let include = Regex::new(black_config.include.as_ref().unwrap()).unwrap();
+    let exclude = Regex::new(
+        black_config
+            .exclude
+            .as_ref()
+            .chain_err(|| "no exclude regex set")?,
+    )
+    .chain_err(|| "exclude is not a valid regex")?;
+    let include = Regex::new(
+        black_config
+            .include
+            .as_ref()
+            .chain_err(|| "no include regex set")?,
+    )
+    .chain_err(|| "include is not a valid regex")?;
     let srcs = config.srcs;
     let url = Arc::new(config.url);
     let black_config = Arc::new(black_config);
@@ -255,7 +299,7 @@ fn main() {
             let black_config = Arc::clone(&black_config);
 
             fs::read(fname.to_string())
-                .map_err(|err| format!("Error opening file: {:?}", err))
+                .chain_err(|| "error opening file")
                 .and_then(move |x| send_req(&url, &black_config, x))
                 .and_then(handle_response)
                 .map_err(move |err| error!("{}: {}", &fname, &err))
@@ -265,4 +309,18 @@ fn main() {
         .map(|_| {});
 
     tokio::run(futs);
+    logging
+}
+
+fn main() {
+    if let Err(ref e) = run() {
+        println!("error: {}", e);
+        for e in e.iter().skip(1) {
+            println!("caused by: {}", e);
+        }
+        if let Some(backtrace) = e.backtrace() {
+            println!("backtrace: {:?}", backtrace);
+        }
+        std::process::exit(1);
+    }
 }
