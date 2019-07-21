@@ -1,6 +1,6 @@
 use clap::{crate_version, App, Arg};
 use error_chain::error_chain;
-use futures::stream;
+use futures::future::join_all;
 use futures::{Future, Stream};
 use log::{debug, error, info, trace};
 use regex::Regex;
@@ -111,6 +111,17 @@ fn handle_reformat(
         .forward(stdout)
         .chain_err(|| "Error writing output")
         .map(|_| {})
+}
+
+use std::path::Path;
+
+fn walk_dir<P: AsRef<Path>>(
+    exclude: Regex,
+    include: Regex,
+    dir: P,
+) -> impl Future<Item = Vec<String>, Error = ()> {
+    let srcs = collect_sources(exclude, include, dir.as_ref().to_str().unwrap());
+    srcs.collect()
 }
 
 fn collect_sources(
@@ -289,26 +300,28 @@ fn run() -> Result<()> {
     debug!("blacc version {} connecting to {}", crate_version!(), url);
     debug!("Inputs: {:?}", &srcs);
 
-    let futs = stream::iter_ok(srcs)
-        .map(move |x| collect_sources(exclude.to_owned(), include.to_owned(), &x))
-        .flatten()
-        .and_then(move |src| {
-            let fname = Arc::new(src.to_string());
-            let fname2 = Arc::clone(&fname);
-            let url = Arc::clone(&url);
-            let black_config = Arc::clone(&black_config);
+    let futs = srcs.into_iter().map(move |src| {
+        let url = Arc::clone(&url);
+        let black_config = Arc::clone(&black_config);
+        let dirs = walk_dir(exclude.to_owned(), include.to_owned(), src);
+        dirs.and_then(|files| {
+            join_all(files.into_iter().map(move |src| {
+                let fname = Arc::new(src);
+                let fname2 = Arc::clone(&fname);
+                let url = Arc::clone(&url);
+                let black_config = Arc::clone(&black_config);
 
-            fs::read(fname.to_string())
-                .chain_err(|| "error opening file")
-                .and_then(move |x| send_req(&url, &black_config, x))
-                .and_then(handle_response)
-                .map_err(move |err| error!("{}: {}", &fname, &err))
-                .map(move |_| info!("{}: reformatted", &fname2))
+                fs::read(fname.to_string())
+                    .chain_err(|| "error opening file")
+                    .and_then(move |x| send_req(&url, &black_config, x))
+                    .and_then(handle_response)
+                    .map_err(move |err| error!("{}: {}", &fname, &err))
+                    .map(move |_| info!("{}: reformatted", &fname2))
+            }))
         })
-        .collect()
-        .map(|_| {});
+    });
 
-    tokio::run(futs);
+    tokio::run(join_all(futs).map(|_| ()));
     logging
 }
 
