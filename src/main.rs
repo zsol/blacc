@@ -1,5 +1,5 @@
 use clap::{crate_version, App, Arg};
-use error_chain::error_chain;
+use error_chain::{error_chain, ChainedError};
 use futures::future::join_all;
 use futures::{Future, Stream};
 use log::{debug, error, info, trace};
@@ -315,7 +315,7 @@ fn run() -> Result<()> {
                     .chain_err(|| "error opening file")
                     .and_then(move |x| send_req(&url, &black_config, x))
                     .and_then(handle_response)
-                    .map_err(move |err| error!("{}: {}", &fname, &err))
+                    .map_err(move |err| error!("{}: {}", &fname, err.display_chain().to_string()))
                     .map(move |_| info!("{}: reformatted", &fname2))
             }))
         })
