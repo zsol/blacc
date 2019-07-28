@@ -2,13 +2,11 @@ use clap::{crate_version, App, Arg};
 use error_chain::{error_chain, ChainedError};
 use futures::future::join_all;
 use futures::{future, stream, Future, Stream};
-use libc;
 use log::{debug, error, info, trace};
 use regex::Regex;
 use reqwest::r#async::Response;
 use reqwest::StatusCode;
 use serde::Deserialize;
-use std::convert::TryFrom;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -46,7 +44,10 @@ where
     }
 }
 
+#[cfg(not(windows))]
 fn get_fd_limit() -> Result<usize> {
+    use std::convert::TryFrom;
+
     let mut limit = unsafe { std::mem::zeroed::<libc::rlimit>() };
     let ret = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit as *mut libc::rlimit) };
     if ret == 0 {
@@ -57,6 +58,12 @@ fn get_fd_limit() -> Result<usize> {
             "Unable to get file descriptor limit",
         ))
     }
+}
+
+#[cfg(windows)]
+fn get_fd_limit() -> Result<usize> {
+    // TODO
+    Ok(100)
 }
 
 static FD_LIMIT: AtomicUsize = AtomicUsize::new(100);
