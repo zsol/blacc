@@ -1,13 +1,16 @@
 use clap::{crate_version, App, Arg};
 use error_chain::{error_chain, ChainedError};
 use futures::future::join_all;
-use futures::{Future, Stream};
+use futures::{future, stream, Future, Stream};
+use libc;
 use log::{debug, error, info, trace};
 use regex::Regex;
 use reqwest::r#async::Response;
 use reqwest::StatusCode;
 use serde::Deserialize;
+use std::convert::TryFrom;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::codec::{FramedWrite, LinesCodec};
 use tokio::fs;
@@ -42,6 +45,21 @@ where
         Box::new(self.then(|r| r.chain_err(callback)))
     }
 }
+
+fn get_fd_limit() -> Result<usize> {
+    let mut limit = unsafe { std::mem::zeroed::<libc::rlimit>() };
+    let ret = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit as *mut libc::rlimit) };
+    if ret == 0 {
+        usize::try_from(limit.rlim_cur).or_else(|_| Ok(std::usize::MAX))
+    } else {
+        Err(Error::with_chain(
+            std::io::Error::last_os_error(),
+            "Unable to get file descriptor limit",
+        ))
+    }
+}
+
+static FD_LIMIT: AtomicUsize = AtomicUsize::new(100);
 
 static DEFAULT_EXCLUDE: &str =
     r"/(\.eggs|\.git|\.hg|\.mypy_cache|\.nox|\.tox|\.venv|_build|buck-out|build|dist)/";
@@ -84,14 +102,14 @@ fn handle_response(resp: Response) -> SFuture<()> {
     let mut body = resp.into_body();
     match status {
         StatusCode::OK => Box::new(handle_reformat(body)),
-        StatusCode::NO_CONTENT => Box::new(futures::future::ok(())),
+        StatusCode::NO_CONTENT => Box::new(future::ok(())),
         other => {
             if let Ok(contents) = body.by_ref().concat2().wait() {
                 debug!("Contents: {:?}", contents);
             } else {
                 debug!("Couldn't read response contents.");
             }
-            Box::new(futures::future::err(Error::from(format!(
+            Box::new(future::err(Error::from(format!(
                 "unexpected status: {:?}",
                 other
             ))))
@@ -110,7 +128,7 @@ fn handle_reformat(
     bodystr
         .forward(stdout)
         .chain_err(|| "Error writing output")
-        .map(|_| {})
+        .map(|_| ())
 }
 
 use std::path::Path;
@@ -271,6 +289,7 @@ fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
 }
 
 fn run() -> Result<()> {
+    FD_LIMIT.store(get_fd_limit().unwrap_or(100), Ordering::Relaxed);
     let (config, black_config) = make_config().chain_err(|| "Unable to set up configuration")?;
     let logging = stderrlog::new()
         .module(module_path!())
@@ -304,8 +323,8 @@ fn run() -> Result<()> {
         let url = Arc::clone(&url);
         let black_config = Arc::clone(&black_config);
         let dirs = walk_dir(exclude.to_owned(), include.to_owned(), src);
-        dirs.and_then(|files| {
-            join_all(files.into_iter().map(move |src| {
+        dirs.map(|files| {
+            stream::iter_ok(files.into_iter().map(move |src| {
                 let fname = Arc::new(src);
                 let fname2 = Arc::clone(&fname);
                 let url = Arc::clone(&url);
@@ -315,13 +334,19 @@ fn run() -> Result<()> {
                     .chain_err(|| "error opening file")
                     .and_then(move |x| send_req(&url, &black_config, x))
                     .and_then(handle_response)
-                    .map_err(move |err| error!("{}: {}", &fname, err.display_chain().to_string()))
+                    .or_else(move |err| {
+                        error!("{}: {}", &fname, err.display_chain().to_string());
+                        Ok(())
+                    })
                     .map(move |_| info!("{}: reformatted", &fname2))
             }))
+            .buffered(FD_LIMIT.load(Ordering::Relaxed) / 2)
+            .collect()
         })
     });
 
-    tokio::run(join_all(futs).map(|_| ()));
+    tokio::run(join_all(futs.map(|x| x.flatten())).map(|_| ()));
+
     logging
 }
 
