@@ -155,7 +155,7 @@ fn handle_reformat(
     fname: &str,
 ) -> impl Future<Item = (), Error = Error> {
     let body = body.map_err(|e| Error::with_chain(e, "Error reading HTTP response"));
-    if false {
+    if true {
         Either::A(
             tokio::fs::file::File::create(fname.to_owned())
                 .map_err(|e| Error::with_chain(e, "Unable to open file for writing"))
