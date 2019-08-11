@@ -1,17 +1,28 @@
 use clap::{crate_version, App, Arg};
 use error_chain::{error_chain, ChainedError};
-use futures::future::join_all;
-use futures::{future, stream, Future, Stream};
+use futures::{future::Either, sink::Sink};
+use futures::{
+    future::{self, join_all},
+    stream, Future, Stream,
+};
 use log::{debug, error, info, trace};
 use regex::Regex;
-use reqwest::r#async::Response;
-use reqwest::StatusCode;
+use reqwest::{r#async::Response, StatusCode};
 use serde::Deserialize;
-use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use tokio::codec::{FramedWrite, LinesCodec};
-use tokio::fs;
+use std::borrow::Borrow;
+use std::path::Path;
+use std::{
+    str::FromStr,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
+use tokio::io::AsyncWrite;
+use tokio::{
+    codec::{FramedWrite, LinesCodec},
+    fs,
+};
 use walkdir::WalkDir;
 
 error_chain! {
@@ -103,12 +114,12 @@ fn send_req(
     req.send().chain_err(|| "Error sending format request")
 }
 
-fn handle_response(resp: Response) -> SFuture<()> {
+fn handle_response(resp: Response, fname: &str) -> SFuture<()> {
     trace!("HTTP {:?}", &resp);
     let status = resp.status();
     let mut body = resp.into_body();
     match status {
-        StatusCode::OK => Box::new(handle_reformat(body)),
+        StatusCode::OK => Box::new(handle_reformat(body, fname)),
         StatusCode::NO_CONTENT => Box::new(future::ok(())),
         other => {
             if let Ok(contents) = body.by_ref().concat2().wait() {
@@ -124,21 +135,41 @@ fn handle_response(resp: Response) -> SFuture<()> {
     }
 }
 
-fn handle_reformat(
-    body: impl Stream<Item = reqwest::r#async::Chunk, Error = reqwest::Error> + 'static + Send,
-) -> impl Future<Item = (), Error = Error> {
+fn drain<In, Out>(in_stream: In, out: Out) -> impl Future<Item = (), Error = Error>
+where
+    In: Stream<Error = Error>,
+    Out: AsyncWrite,
+    In::Item: AsRef<[u8]>,
+{
     let codec = LinesCodec::new_with_max_length(2048);
-    let stdout = FramedWrite::new(tokio::io::stdout(), codec);
-    let bodystr = body
-        .and_then(|chunk| Ok(String::from_utf8(chunk.to_vec()).unwrap()))
-        .map_err(Error::from);
-    bodystr
-        .forward(stdout)
-        .chain_err(|| "Error writing output")
-        .map(|_| ())
+    let sink =
+        FramedWrite::new(out, codec).sink_map_err(|e| Error::with_chain(e, "Error writing output"));
+    let instr = in_stream
+        .map_err(Error::from)
+        .and_then(|chunk| Ok(String::from_utf8(chunk.as_ref().to_vec()).unwrap()));
+    instr.forward(sink).map(|_| ())
 }
 
-use std::path::Path;
+fn handle_reformat(
+    body: impl Stream<Item = reqwest::r#async::Chunk, Error = reqwest::Error> + 'static + Send,
+    fname: &str,
+) -> impl Future<Item = (), Error = Error> {
+    let body = body.map_err(|e| Error::with_chain(e, "Error reading HTTP response"));
+    if false {
+        Either::A(
+            tokio::fs::file::File::create(fname.to_owned())
+                .map_err(|e| Error::with_chain(e, "Unable to open file for writing"))
+                .and_then(|f| drain(body, f)),
+        )
+    } else {
+        // TODO: currently unused
+        Either::B(
+            futures::future::ok::<_, ()>(tokio::io::stdout())
+                .map_err(|_| Error::from("Unable to open stdout for writing"))
+                .and_then(|f| drain(body, f)),
+        )
+    }
+}
 
 fn walk_dir<P: AsRef<Path>>(
     exclude: Regex,
@@ -334,18 +365,19 @@ fn run() -> Result<()> {
             stream::iter_ok(files.into_iter().map(move |src| {
                 let fname = Arc::new(src);
                 let fname2 = Arc::clone(&fname);
+                let fname3 = Arc::clone(&fname);
                 let url = Arc::clone(&url);
                 let black_config = Arc::clone(&black_config);
 
-                fs::read(fname.to_string())
+                fs::read(String::clone(fname.borrow()))
                     .chain_err(|| "error opening file")
                     .and_then(move |x| send_req(&url, &black_config, x))
-                    .and_then(handle_response)
+                    .and_then(move |resp| handle_response(resp, &fname))
                     .or_else(move |err| {
-                        error!("{}: {}", &fname, err.display_chain().to_string());
+                        error!("{}: {}", &fname2, err.display_chain().to_string());
                         Ok(())
                     })
-                    .map(move |_| info!("{}: reformatted", &fname2))
+                    .map(move |_| info!("{}: reformatted", &fname3))
             }))
             .buffered(FD_LIMIT.load(Ordering::Relaxed) / 2)
             .collect()
