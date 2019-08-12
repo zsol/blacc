@@ -223,7 +223,7 @@ fn collect_sources(
     )
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct BlackConfig {
     exclude: Option<String>,
     include: Option<String>,
@@ -234,6 +234,7 @@ struct BlackConfig {
     fast: Option<bool>,
 }
 
+#[derive(Debug)]
 struct BlaccConfig {
     url: String,
     quiet: bool,
@@ -358,12 +359,15 @@ fn run() -> Result<()> {
             .chain_err(|| "no include regex set")?,
     )
     .chain_err(|| "include is not a valid regex")?;
+    debug!(
+        "blacc version {} config {:?}, {:?}",
+        crate_version!(),
+        &config,
+        &black_config
+    );
     let srcs = config.srcs;
     let url = Arc::new(config.url);
     let black_config = Arc::new(black_config);
-
-    debug!("blacc version {} connecting to {}", crate_version!(), url);
-    debug!("Inputs: {:?}", &srcs);
 
     let futs = srcs.into_iter().map(move |src| {
         let url = Arc::clone(&url);
