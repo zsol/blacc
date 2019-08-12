@@ -61,7 +61,9 @@ fn get_fd_limit() -> Result<usize> {
     use std::convert::TryFrom;
 
     let mut limit = unsafe { std::mem::zeroed::<libc::rlimit>() };
-    let ret = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit as *mut libc::rlimit) };
+    let ret = unsafe {
+        libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit as *mut libc::rlimit)
+    };
     if ret == 0 {
         usize::try_from(limit.rlim_cur).or_else(|_| Ok(std::usize::MAX))
     } else {
@@ -143,8 +145,8 @@ where
     In::Item: AsRef<[u8]>,
 {
     let codec = BytesCodec::new();
-    let sink =
-        FramedWrite::new(out, codec).sink_map_err(|e| Error::with_chain(e, "Error writing output"));
+    let sink = FramedWrite::new(out, codec)
+        .sink_map_err(|e| Error::with_chain(e, "Error writing output"));
     let instr = in_stream
         .map_err(Error::from)
         .map(|chunk| Bytes::from(chunk.as_ref()));
@@ -152,7 +154,9 @@ where
 }
 
 fn handle_reformat(
-    body: impl Stream<Item = reqwest::r#async::Chunk, Error = reqwest::Error> + 'static + Send,
+    body: impl Stream<Item = reqwest::r#async::Chunk, Error = reqwest::Error>
+        + 'static
+        + Send,
     fname: &str,
 ) -> impl Future<Item = (), Error = Error> {
     let body = body.map_err(|e| Error::with_chain(e, "Error reading HTTP response"));
@@ -240,7 +244,9 @@ struct BlaccConfig {
 fn read_config(path: String) -> Result<BlackConfig> {
     std::fs::read_to_string(path)
         .chain_err(|| "Unable to read config file")
-        .and_then(|contents| toml::from_str(&contents).chain_err(|| "Unable to parse TOML"))
+        .and_then(|contents| {
+            toml::from_str(&contents).chain_err(|| "Unable to parse TOML")
+        })
 }
 
 fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
@@ -329,7 +335,8 @@ fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
 
 fn run() -> Result<()> {
     FD_LIMIT.store(get_fd_limit().unwrap_or(100), Ordering::Relaxed);
-    let (config, black_config) = make_config().chain_err(|| "Unable to set up configuration")?;
+    let (config, black_config) =
+        make_config().chain_err(|| "Unable to set up configuration")?;
     let logging = stderrlog::new()
         .module(module_path!())
         .quiet(config.quiet)
