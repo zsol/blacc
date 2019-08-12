@@ -102,7 +102,7 @@ fn send_req(
     }
 
     if let Some(version) = &config.target_version {
-        req = req.header("X-Python-Variant", version.to_owned());
+        req = req.header("X-Python-Variant", version.join(","));
     }
 
     if let Some(true) = config.skip_string_normalization {
@@ -228,7 +228,7 @@ struct BlackConfig {
     exclude: Option<String>,
     include: Option<String>,
     line_length: Option<u64>,
-    target_version: Option<String>,
+    target_version: Option<Vec<String>>,
     skip_string_normalization: Option<bool>,
     pyi: Option<bool>,
     fast: Option<bool>,
@@ -246,11 +246,36 @@ fn read_config(path: String) -> Result<BlackConfig> {
     std::fs::read_to_string(path)
         .chain_err(|| "Unable to read config file")
         .and_then(|contents| {
-            toml::from_str(&contents).chain_err(|| "Unable to parse TOML")
+            let v = toml::from_str::<toml::Value>(&contents)
+                .chain_err(|| "Unable to parse TOML")?;
+            v.get("tool")
+                .ok_or(Error::from("No `tool` section in config"))
+                .and_then(|tool| {
+                    tool.get("black")
+                        .ok_or(Error::from("No `tool.black` section in config"))
+                        .and_then(|raw_config| {
+                            let mut raw_config = raw_config.to_owned();
+                            let table = raw_config
+                                .as_table_mut()
+                                .ok_or(Error::from("`tool.black` is not a table"))?;
+                            let dash_keys = table
+                                .keys()
+                                .filter(|k| k.contains("-"))
+                                .map(ToOwned::to_owned)
+                                .collect::<Vec<_>>();
+                            for key in dash_keys {
+                                let value = table.remove(&key).unwrap();
+                                table.insert(key.replace("-", "_"), value);
+                            }
+                            raw_config.try_into().map_err(|e| {
+                                Error::with_chain(e, "Invalid config shape")
+                            })
+                        })
+                })
         })
 }
 
-fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
+fn make_config() -> Result<(BlaccConfig, BlackConfig)> {
     let matches =
         App::new("Black Client")
             .version(crate_version!())
@@ -284,7 +309,7 @@ fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
             .arg(Arg::with_name("safe").long("safe").help("Run sanity checks after formatting").conflicts_with("fast"))
             .arg(Arg::with_name("skip-string-normalization").short("S").long("skip-string-normalization").help("Don't normalize string quotes or prefixes"))
             .arg(Arg::with_name("target-version").short("t").long("target-version").takes_value(true).use_delimiter(true).help("Python versions that should be supported by Black's output.").possible_values(&["py27", "py33", "py34", "py35", "py36", "py37", "py38"]))
-            .arg(Arg::with_name("line-length").short("l").long("line-length").takes_value(true).default_value("88").help("How many characters per line to allow"))
+            .arg(Arg::with_name("line-length").short("l").long("line-length").takes_value(true).help("How many characters per line to allow"))
             .arg(
                 Arg::with_name("config-file")
                     .help("Path to TOML file containing black's configuration")
@@ -301,9 +326,10 @@ fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
             )
             .get_matches();
     let config_file = matches.value_of("config-file").map(|x| x.to_owned());
-    let mut config = config_file
-        .map(|x| read_config(x).unwrap())
-        .unwrap_or_default();
+    let mut config = match config_file {
+        Some(file) => read_config(file)?,
+        None => Default::default(),
+    };
     let srcs: Vec<String> = matches
         .values_of("src")
         .unwrap()
@@ -311,10 +337,14 @@ fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
         .collect();
 
     if let Some(exclude) = matches.value_of("exclude") {
-        config.exclude = Some(String::from(exclude));
+        if exclude != DEFAULT_EXCLUDE || config.exclude.is_none() {
+            config.exclude = Some(String::from(exclude));
+        }
     }
     if let Some(include) = matches.value_of("include") {
-        config.include = Some(String::from(include));
+        if include != DEFAULT_INCLUDE || config.include.is_none() {
+            config.include = Some(String::from(include));
+        }
     }
     if let Some(length) = matches.value_of("line-length") {
         config.line_length = Some(u64::from_str(length).unwrap());
@@ -323,9 +353,9 @@ fn make_config() -> Option<(BlaccConfig, BlackConfig)> {
         config.fast = Some(true);
     }
 
-    Some((
+    Ok((
         BlaccConfig {
-            url: String::from(matches.value_of("url")?),
+            url: String::from(matches.value_of("url").unwrap()),
             quiet: matches.is_present("quiet"),
             verbosity: matches.occurrences_of("verbose") as usize,
             srcs,
