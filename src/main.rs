@@ -1,27 +1,28 @@
+use bytes::Bytes;
 use clap::{crate_version, App, Arg};
 use error_chain::{error_chain, ChainedError};
-use futures::{future::Either, sink::Sink};
 use futures::{
-    future::{self, join_all},
+    future::{self, join_all, Either},
+    sink::Sink,
     stream, Future, Stream,
 };
 use log::{debug, error, info, trace};
 use regex::Regex;
 use reqwest::{r#async::Response, StatusCode};
 use serde::Deserialize;
-use std::borrow::Borrow;
-use std::path::Path;
 use std::{
+    borrow::Borrow,
+    path::Path,
     str::FromStr,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
 };
-use tokio::io::AsyncWrite;
 use tokio::{
-    codec::{FramedWrite, LinesCodec},
+    codec::{BytesCodec, FramedWrite},
     fs,
+    io::AsyncWrite,
 };
 use walkdir::WalkDir;
 
@@ -141,12 +142,12 @@ where
     Out: AsyncWrite,
     In::Item: AsRef<[u8]>,
 {
-    let codec = LinesCodec::new_with_max_length(2048);
+    let codec = BytesCodec::new();
     let sink =
         FramedWrite::new(out, codec).sink_map_err(|e| Error::with_chain(e, "Error writing output"));
     let instr = in_stream
         .map_err(Error::from)
-        .and_then(|chunk| Ok(String::from_utf8(chunk.as_ref().to_vec()).unwrap()));
+        .map(|chunk| Bytes::from(chunk.as_ref()));
     instr.forward(sink).map(|_| ())
 }
 
