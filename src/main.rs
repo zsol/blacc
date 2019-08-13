@@ -12,6 +12,7 @@ use reqwest::{r#async::Response, StatusCode};
 use serde::Deserialize;
 use std::{
     borrow::Borrow,
+    fmt::{Display, Formatter},
     path::Path,
     str::FromStr,
     sync::{
@@ -86,6 +87,20 @@ static DEFAULT_EXCLUDE: &str =
     r"/(\.eggs|\.git|\.hg|\.mypy_cache|\.nox|\.tox|\.venv|_build|buck-out|build|dist)/";
 static DEFAULT_INCLUDE: &str = r"\.pyi?$";
 
+enum ActionTaken {
+    Reformatted,
+    Noop,
+}
+
+impl Display for ActionTaken {
+    fn fmt(self: &Self, f: &mut Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        match self {
+            ActionTaken::Reformatted => f.write_str("reformatted"),
+            ActionTaken::Noop => f.write_str("already well-formatted"),
+        }
+    }
+}
+
 fn send_req(
     url: &str,
     config: &BlackConfig,
@@ -117,13 +132,13 @@ fn send_req(
     req.send().chain_err(|| "Error sending format request")
 }
 
-fn handle_response(resp: Response, fname: &str) -> SFuture<()> {
+fn handle_response(resp: Response, fname: &str) -> SFuture<ActionTaken> {
     trace!("HTTP {:?}", &resp);
     let status = resp.status();
     let mut body = resp.into_body();
     match status {
-        StatusCode::OK => Box::new(handle_reformat(body, fname)),
-        StatusCode::NO_CONTENT => Box::new(future::ok(())),
+        StatusCode::OK => Box::new(handle_reformat(body, fname).map(|_| ActionTaken::Reformatted)),
+        StatusCode::NO_CONTENT => Box::new(future::ok(ActionTaken::Noop)),
         other => {
             if let Ok(contents) = body.by_ref().concat2().wait() {
                 debug!("Contents: {:?}", contents);
@@ -386,11 +401,11 @@ fn run() -> Result<()> {
                     .chain_err(|| "error opening file")
                     .and_then(move |x| send_req(&url, &black_config, x))
                     .and_then(move |resp| handle_response(resp, &fname))
+                    .map(move |action| info!("{}: {}", &fname3, action))
                     .or_else(move |err| {
                         error!("{}: {}", &fname2, err.display_chain().to_string());
                         Ok(())
                     })
-                    .map(move |_| info!("{}: reformatted", &fname3))
             }))
             .buffered(FD_LIMIT.load(Ordering::Relaxed) / 2)
             .collect()

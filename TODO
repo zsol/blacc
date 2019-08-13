@@ -1,3 +1,2 @@
 - spawn blackd automatically and reuse it
-- tweak log levels
 - support reading from stdin
