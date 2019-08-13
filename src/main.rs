@@ -6,7 +6,7 @@ use futures::{
     sink::Sink,
     stream, Future, Stream,
 };
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
 use regex::{Regex, RegexBuilder};
 use reqwest::{r#async::Response, StatusCode};
 use serde::Deserialize;
@@ -309,7 +309,7 @@ fn make_config() -> Result<(BlaccConfig, BlackConfig)> {
             .arg(Arg::with_name("target-version").short("t").long("target-version").takes_value(true).use_delimiter(true).help("Python versions that should be supported by Black's output.").possible_values(&["py27", "py33", "py34", "py35", "py36", "py37", "py38"]))
             .arg(Arg::with_name("line-length").short("l").long("line-length").takes_value(true).help("How many characters per line to allow"))
             .arg(Arg::with_name("config-file").help("Path to TOML file containing black's configuration").long("config-file").takes_value(true))
-            .arg(Arg::with_name("src").help("Input source(s) to be formatted").long_help("Input source(s) to be formatted. A single `-` means stdin.").takes_value(true).default_value(".").multiple(true).empty_values(false))
+            .arg(Arg::with_name("src").help("Input source(s) to be formatted").long_help("Input source(s) to be formatted. A single `-` means stdin.").takes_value(true).multiple(true).empty_values(false))
             .get_matches();
     let config_file = matches.value_of("config-file").map(|x| x.to_owned());
     let mut config = match config_file {
@@ -318,9 +318,8 @@ fn make_config() -> Result<(BlaccConfig, BlackConfig)> {
     };
     let srcs: Vec<String> = matches
         .values_of("src")
-        .unwrap()
-        .map(|x| x.to_string())
-        .collect();
+        .map(|x| x.map(|s| s.to_string()).collect())
+        .unwrap_or_default();
 
     if let Some(exclude) = matches.value_of("exclude") {
         if exclude != DEFAULT_EXCLUDE || config.exclude.is_none() {
@@ -388,6 +387,11 @@ fn run() -> Result<()> {
     let srcs = config.srcs;
     let url = Arc::new(config.url);
     let black_config = Arc::new(black_config);
+
+    if srcs.len() == 0 {
+        warn!("No paths given. Nothing to do 😴");
+        return logging;
+    }
 
     if srcs.len() == 1 && srcs[0] == "-" {
         let mut buf = Vec::new();
