@@ -13,6 +13,7 @@ use serde::Deserialize;
 use std::{
     borrow::Borrow,
     fmt::{Display, Formatter},
+    io::Read,
     path::Path,
     str::FromStr,
     sync::{
@@ -93,7 +94,10 @@ enum ActionTaken {
 }
 
 impl Display for ActionTaken {
-    fn fmt(self: &Self, f: &mut Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+    fn fmt(
+        self: &Self,
+        f: &mut Formatter<'_>,
+    ) -> std::result::Result<(), std::fmt::Error> {
         match self {
             ActionTaken::Reformatted => f.write_str("reformatted"),
             ActionTaken::Noop => f.write_str("already well-formatted"),
@@ -132,12 +136,14 @@ fn send_req(
     req.send().chain_err(|| "Error sending format request")
 }
 
-fn handle_response(resp: Response, fname: &str) -> SFuture<ActionTaken> {
+fn handle_response(resp: Response, fname: Option<Arc<String>>) -> SFuture<ActionTaken> {
     trace!("HTTP {:?}", &resp);
     let status = resp.status();
     let mut body = resp.into_body();
     match status {
-        StatusCode::OK => Box::new(handle_reformat(body, fname).map(|_| ActionTaken::Reformatted)),
+        StatusCode::OK => Box::new(
+            handle_reformat(body, fname.clone()).map(|_| ActionTaken::Reformatted),
+        ),
         StatusCode::NO_CONTENT => Box::new(future::ok(ActionTaken::Noop)),
         other => {
             if let Ok(contents) = body.by_ref().concat2().wait() {
@@ -172,22 +178,20 @@ fn handle_reformat(
     body: impl Stream<Item = reqwest::r#async::Chunk, Error = reqwest::Error>
         + 'static
         + Send,
-    fname: &str,
+    fname: Option<Arc<String>>,
 ) -> impl Future<Item = (), Error = Error> {
     let body = body.map_err(|e| Error::with_chain(e, "Error reading HTTP response"));
-    if true {
-        Either::A(
-            tokio::fs::file::File::create(fname.to_owned())
+    match fname {
+        Some(fname) => Either::A(
+            tokio::fs::file::File::create(fname.as_ref().clone())
                 .map_err(|e| Error::with_chain(e, "Unable to open file for writing"))
                 .and_then(|f| drain(body, f)),
-        )
-    } else {
-        // TODO: currently unused
-        Either::B(
+        ),
+        None => Either::B(
             futures::future::ok::<_, ()>(tokio::io::stdout())
                 .map_err(|_| Error::from("Unable to open stdout for writing"))
                 .and_then(|f| drain(body, f)),
-        )
+        ),
     }
 }
 
@@ -305,7 +309,7 @@ fn make_config() -> Result<(BlaccConfig, BlackConfig)> {
             .arg(Arg::with_name("target-version").short("t").long("target-version").takes_value(true).use_delimiter(true).help("Python versions that should be supported by Black's output.").possible_values(&["py27", "py33", "py34", "py35", "py36", "py37", "py38"]))
             .arg(Arg::with_name("line-length").short("l").long("line-length").takes_value(true).help("How many characters per line to allow"))
             .arg(Arg::with_name("config-file").help("Path to TOML file containing black's configuration").long("config-file").takes_value(true))
-            .arg(Arg::with_name("src").help("Input source to be formatted").takes_value(true).default_value(".").multiple(true).empty_values(false))
+            .arg(Arg::with_name("src").help("Input source(s) to be formatted").long_help("Input source(s) to be formatted. A single `-` means stdin.").takes_value(true).default_value(".").multiple(true).empty_values(false))
             .get_matches();
     let config_file = matches.value_of("config-file").map(|x| x.to_owned());
     let mut config = match config_file {
@@ -385,6 +389,19 @@ fn run() -> Result<()> {
     let url = Arc::new(config.url);
     let black_config = Arc::new(black_config);
 
+    if srcs.len() == 1 && srcs[0] == "-" {
+        let mut buf = Vec::new();
+        let stdin = std::io::stdin();
+        let result = stdin
+            .lock()
+            .read_to_end(&mut buf)
+            .map(|_| buf)
+            .map_err(|e| Error::with_chain(e, "Unable to read stdin"));
+        let fut = format_bytes(result, url, black_config, None);
+        tokio::run(fut);
+        return logging;
+    }
+
     let futs = srcs.into_iter().map(move |src| {
         let url = Arc::clone(&url);
         let black_config = Arc::clone(&black_config);
@@ -392,19 +409,13 @@ fn run() -> Result<()> {
         dirs.map(|files| {
             stream::iter_ok(files.into_iter().map(move |src| {
                 let fname = Arc::new(src);
-                let fname2 = Arc::clone(&fname);
-                let fname3 = Arc::clone(&fname);
                 let url = Arc::clone(&url);
                 let black_config = Arc::clone(&black_config);
 
                 fs::read(String::clone(fname.borrow()))
                     .chain_err(|| "error opening file")
-                    .and_then(move |x| send_req(&url, &black_config, x))
-                    .and_then(move |resp| handle_response(resp, &fname))
-                    .map(move |action| info!("{}: {}", &fname3, action))
-                    .or_else(move |err| {
-                        error!("{}: {}", &fname2, err.display_chain().to_string());
-                        Ok(())
+                    .then(move |contents| {
+                        format_bytes(contents, url, black_config, Some(fname))
                     })
             }))
             .buffered(FD_LIMIT.load(Ordering::Relaxed) / 2)
@@ -415,6 +426,30 @@ fn run() -> Result<()> {
     tokio::run(join_all(futs.map(|x| x.flatten())).map(|_| ()));
 
     logging
+}
+
+fn format_bytes(
+    contents: Result<Vec<u8>>,
+    url: Arc<String>,
+    config: Arc<BlackConfig>,
+    fname: Option<Arc<String>>,
+) -> impl Future<Item = (), Error = ()> {
+    let fname_for_display = match &fname {
+        Some(fname) => Arc::clone(fname),
+        None => Arc::new("<stdin>".to_string()),
+    };
+    future::result(contents)
+        .and_then(move |contents| send_req(&url, &config, contents))
+        .and_then(move |resp| handle_response(resp, fname))
+        .then(move |result| {
+            match result {
+                Ok(action) => info!("{}: {}", fname_for_display, action),
+                Err(err) => {
+                    error!("{}: {}", fname_for_display, err.display_chain().to_string())
+                }
+            }
+            Ok(())
+        })
 }
 
 fn main() {
