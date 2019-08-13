@@ -279,51 +279,18 @@ fn make_config() -> Result<(BlaccConfig, BlackConfig)> {
     let matches =
         App::new("Black Client")
             .version(crate_version!())
-            .arg(Arg::with_name("verbose").short("-v").help("Set verbosity").multiple(true))
+            .arg(Arg::with_name("verbose").short("-v").help("Set verbosity").long_help("Specify multiple times to increase verbosity. -v = info level logs, -vv = debug logs, -vvv = everything").multiple(true))
             .arg(Arg::with_name("quiet").short("q").help("Silence all logs").conflicts_with("quiet"))
-            .arg(
-                Arg::with_name("url")
-                    .required(true)
-                    .long("url")
-                    .short("u")
-                    .takes_value(true)
-                    .help("URL of a running `blackd` server"),
-            )
-            .arg(
-                Arg::with_name("exclude")
-                    .long("exclude")
-                    .help("A regular expression that matches files and directories that should be excluded on recursive searches")
-                    .long_help("An empty value means no paths are excluded. Exclusions are calculated first, inclusions later.")
-                    .takes_value(true)
-                    .default_value(DEFAULT_EXCLUDE)
-            )
-            .arg(
-                Arg::with_name("include")
-                    .long("include")
-                    .help("A regular expression that matches files and directories that should be included on recursive searches")
-                    .long_help("An empty value means all files are included. Exclusions are calculated first, inclusions later.")
-                    .takes_value(true)
-                    .default_value(DEFAULT_INCLUDE)
-            )
+            .arg(Arg::with_name("url").required(true).long("url").short("u").takes_value(true).help("URL of a running `blackd` server"))
+            .arg(Arg::with_name("exclude").long("exclude").help("A regular expression that matches files and directories that should be excluded on recursive searches").long_help("An empty value means no paths are excluded. Exclusions are calculated first, inclusions later.").takes_value(true).default_value(DEFAULT_EXCLUDE))
+            .arg(Arg::with_name("include").long("include").help("A regular expression that matches files and directories that should be included on recursive searches").long_help("An empty value means all files are included. Exclusions are calculated first, inclusions later.").takes_value(true).default_value(DEFAULT_INCLUDE))
             .arg(Arg::with_name("fast").long("fast").help("Skip sanity checks").conflicts_with("safe"))
             .arg(Arg::with_name("safe").long("safe").help("Run sanity checks after formatting").conflicts_with("fast"))
             .arg(Arg::with_name("skip-string-normalization").short("S").long("skip-string-normalization").help("Don't normalize string quotes or prefixes"))
             .arg(Arg::with_name("target-version").short("t").long("target-version").takes_value(true).use_delimiter(true).help("Python versions that should be supported by Black's output.").possible_values(&["py27", "py33", "py34", "py35", "py36", "py37", "py38"]))
             .arg(Arg::with_name("line-length").short("l").long("line-length").takes_value(true).help("How many characters per line to allow"))
-            .arg(
-                Arg::with_name("config-file")
-                    .help("Path to TOML file containing black's configuration")
-                    .long("config-file")
-                    .takes_value(true),
-            )
-            .arg(
-                Arg::with_name("src")
-                    .help("Input source to be formatted")
-                    .takes_value(true)
-                    .default_value(".")
-                    .multiple(true)
-                    .empty_values(false),
-            )
+            .arg(Arg::with_name("config-file").help("Path to TOML file containing black's configuration").long("config-file").takes_value(true))
+            .arg(Arg::with_name("src").help("Input source to be formatted").takes_value(true).default_value(".").multiple(true).empty_values(false))
             .get_matches();
     let config_file = matches.value_of("config-file").map(|x| x.to_owned());
     let mut config = match config_file {
@@ -371,7 +338,7 @@ fn run() -> Result<()> {
     let logging = stderrlog::new()
         .module(module_path!())
         .quiet(config.quiet)
-        .verbosity(config.verbosity)
+        .verbosity(config.verbosity + 1)
         .init()
         .chain_err(|| "Unable to set up logging");
 
