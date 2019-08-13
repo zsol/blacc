@@ -7,7 +7,7 @@ use futures::{
     stream, Future, Stream,
 };
 use log::{debug, error, info, trace};
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 use reqwest::{r#async::Response, StatusCode};
 use serde::Deserialize;
 use std::{
@@ -375,19 +375,23 @@ fn run() -> Result<()> {
         .init()
         .chain_err(|| "Unable to set up logging");
 
-    let exclude = Regex::new(
+    let exclude = RegexBuilder::new(
         black_config
             .exclude
             .as_ref()
             .chain_err(|| "no exclude regex set")?,
     )
+    .ignore_whitespace(true)
+    .build()
     .chain_err(|| "exclude is not a valid regex")?;
-    let include = Regex::new(
+    let include = RegexBuilder::new(
         black_config
             .include
             .as_ref()
             .chain_err(|| "no include regex set")?,
     )
+    .ignore_whitespace(true)
+    .build()
     .chain_err(|| "include is not a valid regex")?;
     debug!(
         "blacc version {} config {:?}, {:?}",
