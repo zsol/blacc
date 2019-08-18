@@ -43,8 +43,6 @@ jobs:
 - job: lint
   pool:
     vmImage: ubuntu-latest
-  variables:
-    revision: $[ coalesce(variables['System.PullRequest.TargetBranch'], variables['Build.SourceVersion']) ]
   steps:
   - script: |
       curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain $RUSTUP_TOOLCHAIN
@@ -64,6 +62,6 @@ jobs:
         TARGET=$(git rev-parse "$BUILD_SOURCEVERSION"^)
       fi
       git diff-tree --no-commit-id --name-only -r "$TARGET" "$BUILD_SOURCEVERSION" | \
-      xargs pre-commit run --files
+      xargs pre-commit run --verbose --files
     displayName: Run pre-commit hooks
 
