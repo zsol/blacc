@@ -58,6 +58,7 @@ jobs:
   - script: |
       git diff-tree --no-commit-id --name-only -r $REVISION | \
       xargs pre-commit run --files
+      echo $REVISION
     env:
       REVISION: $(Build.SourceVersion)
 
