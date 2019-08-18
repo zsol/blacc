@@ -1,0 +1,13 @@
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v2.3.0
+    hooks:
+    -   id: check-toml
+    -   id: check-yaml
+    -   id: trailing-whitespace
+-   repo: https://github.com/zsol/pre-commit-rust
+    rev: v1.0.0
+    hooks:
+    -   id: clippy
+    -   id: fmt
+    -   id: cargo-check
