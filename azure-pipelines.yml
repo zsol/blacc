@@ -56,9 +56,12 @@ jobs:
   - script: pip install pre-commit
     displayName: Install pre-commit
   - script: |
-      git diff-tree --no-commit-id --name-only -r $REVISION | \
+      git diff-tree --no-commit-id --name-only -r HEAD | \
       xargs pre-commit run --files
       echo $REVISION
+      git rev-parse HEAD
+      echo lol
+      git diff-tree --no-commit-id --name-only -r $REVISION
     env:
       REVISION: $(Build.SourceVersion)
 
