@@ -63,5 +63,5 @@ jobs:
       echo lol
       git diff-tree --no-commit-id --name-only -r $REVISION
     env:
-      REVISION: $(coalesce(System.PullRequest.TargetBranch, Build.SourceVersion))
+      REVISION: ${{ coalesce(System.PullRequest.TargetBranch, Build.SourceVersion) }}
 
