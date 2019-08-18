@@ -58,14 +58,12 @@ jobs:
   - script: pip install pre-commit
     displayName: Install pre-commit
   - script: |
-      echo $SYSTEM_PULLREQUEST_TARGETBRANCH
-      echo $BUILD_SOURCEVERSION
-      echo $BUILD_SOURCEBRANCH
-      git diff-tree --no-commit-id --name-only -r $REVISION | \
+      if [ "$BUILD_REASON" = "pullrequest" ]; then
+        TARGET=$(git merge-base "$SYSTEM_PULLREQUEST_SOURCEBRANCH" "origin/$SYSTEM_PULLREQUEST_TARGETBRANCH")
+      else
+        TARGET=$(git rev-parse "$BUILD_SOURCEVERSION"^)
+      fi
+      git diff-tree --no-commit-id --name-only -r "$TARGET" "$BUILD_SOURCEVERSION" | \
       xargs pre-commit run --files
-      echo $REVISION
-      git rev-parse HEAD
-      echo lol
-      git diff-tree --no-commit-id --name-only -r $REVISION
     displayName: Run pre-commit hooks
 
