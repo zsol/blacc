@@ -386,18 +386,18 @@ fn read_config(path: String) -> Result<BlackConfig> {
             let v = toml::from_str::<toml::Value>(&contents)
                 .chain_err(|| "Unable to parse TOML")?;
             v.get("tool")
-                .ok_or(Error::from("No `tool` section in config"))
+                .ok_or_else(|| Error::from("No `tool` section in config"))
                 .and_then(|tool| {
                     tool.get("black")
-                        .ok_or(Error::from("No `tool.black` section in config"))
+                        .ok_or_else(|| Error::from("No `tool.black` section in config"))
                         .and_then(|raw_config| {
                             let mut raw_config = raw_config.to_owned();
-                            let table = raw_config
-                                .as_table_mut()
-                                .ok_or(Error::from("`tool.black` is not a table"))?;
+                            let table = raw_config.as_table_mut().ok_or_else(|| {
+                                Error::from("`tool.black` is not a table")
+                            })?;
                             let dash_keys = table
                                 .keys()
-                                .filter(|k| k.contains("-"))
+                                .filter(|k| k.contains('-'))
                                 .map(ToOwned::to_owned)
                                 .collect::<Vec<_>>();
                             for key in dash_keys {
@@ -506,7 +506,7 @@ fn run() -> Result<()> {
     let url = Arc::new(config.url);
     let black_config = Arc::new(black_config);
 
-    if srcs.len() == 0 {
+    if srcs.is_empty() {
         warn!("No paths given. Nothing to do 😴");
         return logging;
     }
