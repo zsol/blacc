@@ -58,6 +58,23 @@ where
     }
 }
 
+#[test]
+fn test_future_chain_err() {
+    use std::io;
+    let mut runtime = tokio::runtime::Runtime::new().unwrap();
+    let f = runtime.block_on(future::ok::<(), io::Error>(()).chain_err(|| "hello"));
+    assert!(f.is_ok());
+
+    let g = runtime.block_on(
+        future::err::<(), _>(io::Error::from(io::ErrorKind::Other))
+            .chain_err(|| "hello"),
+    );
+    assert!(g.is_err());
+    if let Err(err) = g {
+        assert_eq!(err.description(), "hello");
+    }
+}
+
 #[cfg(not(windows))]
 fn get_fd_limit() -> Result<usize> {
     use std::convert::TryFrom;
@@ -88,6 +105,7 @@ static DEFAULT_EXCLUDE: &str =
     r"/(\.eggs|\.git|\.hg|\.mypy_cache|\.nox|\.tox|\.venv|_build|buck-out|build|dist)/";
 static DEFAULT_INCLUDE: &str = r"\.pyi?$";
 
+#[derive(Debug, PartialEq)]
 enum ActionTaken {
     Reformatted,
     Noop,
@@ -136,6 +154,60 @@ fn send_req(
     req.send().chain_err(|| "Error sending format request")
 }
 
+#[test]
+fn test_handle_response_error() {
+    use hyper;
+    use reqwest::{r#async::ResponseBuilderExt, Url};
+
+    let mut rt = tokio::runtime::Runtime::new().unwrap();
+    let resp = Response::from(
+        hyper::Response::builder()
+            .status(404)
+            .url(Url::parse("https://lol").unwrap())
+            .body("some error")
+            .unwrap(),
+    );
+    let action = rt.block_on(handle_response(resp, None));
+    assert!(action.is_err());
+}
+
+#[test]
+fn test_handle_response_noop() {
+    use hyper;
+    use reqwest::{r#async::ResponseBuilderExt, Url};
+
+    let mut rt = tokio::runtime::Runtime::new().unwrap();
+    let resp = Response::from(
+        hyper::Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .url(Url::parse("https://lol").unwrap())
+            .body("")
+            .unwrap(),
+    );
+    let action = rt.block_on(handle_response(resp, None));
+    assert!(action.is_ok());
+    assert_eq!(action.unwrap(), ActionTaken::Noop);
+}
+
+
+#[test]
+fn test_handle_response_reformat() {
+    use hyper;
+    use reqwest::{r#async::ResponseBuilderExt, Url};
+
+    let mut rt = tokio::runtime::Runtime::new().unwrap();
+    let resp = Response::from(
+        hyper::Response::builder()
+            .status(StatusCode::OK)
+            .url(Url::parse("https://lol").unwrap())
+            .body("hello")
+            .unwrap(),
+    );
+    let action = rt.block_on(handle_response(resp, None));
+    assert!(action.is_ok());
+    assert_eq!(action.unwrap(), ActionTaken::Reformatted);
+}
+
 fn handle_response(resp: Response, fname: Option<Arc<String>>) -> SFuture<ActionTaken> {
     trace!("HTTP {:?}", &resp);
     let status = resp.status();
@@ -157,6 +229,20 @@ fn handle_response(resp: Response, fname: Option<Arc<String>>) -> SFuture<Action
             ))))
         }
     }
+}
+
+#[test]
+fn test_drain() {
+    use tempfile::tempdir;
+    let mut rt = tokio::runtime::Runtime::new().unwrap();
+    let input = "hello".as_bytes();
+    let input_stream = stream::repeat(input).take(2);
+    let temp = tempdir().unwrap();
+    let output = rt.block_on(fs::File::create(temp.path().join("lol"))).unwrap();
+
+    rt.block_on(drain(input_stream, output)).unwrap();
+    let buf = std::fs::read(temp.path().join("lol")).unwrap();
+    assert_eq!(buf.as_slice(), "hellohello".as_bytes());
 }
 
 fn drain<In, Out>(in_stream: In, out: Out) -> impl Future<Item = (), Error = Error>
@@ -193,6 +279,37 @@ fn handle_reformat(
                 .and_then(|f| drain(body, f)),
         ),
     }
+}
+
+#[test]
+fn test_walk_dir() {
+    use std::fs::{create_dir, File};
+    use tempfile::tempdir;
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    let exclude_dir = root.join("exclude");
+    let some_dir = root.join("some_dir");
+    let exclude_file = exclude_dir.join("include.file");
+    let include_file = root.join("include.file");
+    let include_nested_file = some_dir.join("include.file");
+
+    for dir in [exclude_dir, some_dir].iter() {
+        create_dir(dir).unwrap();
+    }
+    for f in [&exclude_file, &include_file, &include_nested_file].iter() {
+        File::create(f).unwrap();
+    }
+    let mut runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let f = walk_dir(
+        Regex::from_str(r"exclude").unwrap(),
+        Regex::from_str(r"include\.file").unwrap(),
+        root.to_str().unwrap().to_string(),
+    );
+
+    let result = runtime.block_on(f).unwrap();
+    assert_eq!(result.len(), 2);
+    assert!(result.contains(&include_file.to_str().unwrap().to_owned()));
 }
 
 fn walk_dir<P: AsRef<Path>>(
