@@ -189,7 +189,6 @@ fn test_handle_response_noop() {
     assert_eq!(action.unwrap(), ActionTaken::Noop);
 }
 
-
 #[test]
 fn test_handle_response_reformat() {
     use hyper;
@@ -238,7 +237,9 @@ fn test_drain() {
     let input = "hello".as_bytes();
     let input_stream = stream::repeat(input).take(2);
     let temp = tempdir().unwrap();
-    let output = rt.block_on(fs::File::create(temp.path().join("lol"))).unwrap();
+    let output = rt
+        .block_on(fs::File::create(temp.path().join("lol")))
+        .unwrap();
 
     rt.block_on(drain(input_stream, output)).unwrap();
     let buf = std::fs::read(temp.path().join("lol")).unwrap();
