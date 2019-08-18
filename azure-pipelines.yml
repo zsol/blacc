@@ -1,41 +1,63 @@
 trigger:
 - master
+jobs:
+- job: test
+  strategy:
+    matrix:
+      linux-stable:
+        rustup_toolchain: stable
+        image_name: ubuntu-latest
+      linux-beta:
+        rustup_toolchain: beta
+        image_name: ubuntu-latest
+      linux-nightly:
+        rustup_toolchain: nightly
+        image_name: ubuntu-latest
+      mac-stable:
+        rustup_toolchain: stable
+        image_name: macOS-latest
+      windows-stable:
+        rustup_toolchain: stable
+        image_name: windows-latest
 
-strategy:
-  matrix:
-    linux-stable:
-      rustup_toolchain: stable
-      image_name: ubuntu-latest
-    linux-beta:
-      rustup_toolchain: beta
-      image_name: ubuntu-latest
-    linux-nightly:
+  pool:
+    vmImage: $(image_name)
+
+  steps:
+  - script: |
+      curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain $RUSTUP_TOOLCHAIN
+      echo "##vso[task.setvariable variable=PATH;]$PATH:$HOME/.cargo/bin"
+    displayName: Install rust toolchain
+    condition: ne(variables['Agent.OS'], 'Windows_NT')
+  - script: |
+      curl -sSf -o rustup-init.exe https://win.rustup.rs
+      rustup-init.exe -y --default-toolchain %RUSTUP_TOOLCHAIN%
+      echo "##vso[task.setvariable variable=PATH;]%PATH%;%USERPROFILE%\.cargo\bin"
+    displayName: Install rust toolchain
+    condition: eq(variables['Agent.OS'], 'Windows_NT')
+  - script: cargo build --all
+    displayName: Build
+  - script: cargo test --all
+    displayName: Run Tests
+
+- job: lint
+  pool:
+    vmImage: ubuntu-latest
+  steps:
+  - script: |
+      curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain $RUSTUP_TOOLCHAIN
+      echo "##vso[task.setvariable variable=PATH;]$PATH:$HOME/.cargo/bin"
+    displayName: Install rust toolchain
+    env:
       rustup_toolchain: nightly
-      image_name: ubuntu-latest
-    mac-stable:
-      rustup_toolchain: stable
-      image_name: macOS-latest
-    windows-stable:
-      rustup_toolchain: stable
-      image_name: windows-latest
-
-pool:
-  vmImage: $(image_name)
-
-steps:
-- script: |
-    curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain $RUSTUP_TOOLCHAIN
-    echo "##vso[task.setvariable variable=PATH;]$PATH:$HOME/.cargo/bin"
-  displayName: Install rust toolchain
-  condition: ne(variables['Agent.OS'], 'Windows_NT')
-- script: |
-    curl -sSf -o rustup-init.exe https://win.rustup.rs
-    rustup-init.exe -y --default-toolchain %RUSTUP_TOOLCHAIN%
-    echo "##vso[task.setvariable variable=PATH;]%PATH%;%USERPROFILE%\.cargo\bin"
-  displayName: Install rust toolchain
-  condition: eq(variables['Agent.OS'], 'Windows_NT')
-- script: cargo build --all
-  displayName: Build
-- script: cargo test --all
-  displayName: Run Tests
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: 3.7
+  - script: pip install pre-commit
+    displayName: Install pre-commit
+  - script: |
+      git diff-tree --no-commit-id --name-only -r $REVISION | \
+      xargs pre-commit run --files
+    env:
+      revision: $(Build.SourceVersion)
 
