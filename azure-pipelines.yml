@@ -62,6 +62,6 @@ jobs:
       git rev-parse HEAD
       echo lol
       git diff-tree --no-commit-id --name-only -r $REVISION
-    env:
-      REVISION: ${{ coalesce(variables.System.PullRequest.TargetBranch, variables.Build.SourceVersion) }}
+    variables:
+      revision: $[ coalesce(variables['System.PullRequest.TargetBranch'], variables['Build.SourceVersion']) ]
 
