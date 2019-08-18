@@ -34,7 +34,7 @@ error_chain! {
         Reqwest(reqwest::Error);
     }
 }
-type SFuture<T> = Box<Future<Item = T, Error = Error> + Send>;
+type SFuture<T> = Box<dyn Future<Item = T, Error = Error> + Send>;
 
 trait FutureChainErr<T> {
     fn chain_err<F, E>(self, callback: F) -> SFuture<T>
