@@ -43,6 +43,8 @@ jobs:
 - job: lint
   pool:
     vmImage: ubuntu-latest
+  variables:
+    revision: $[ coalesce(variables['System.PullRequest.TargetBranch'], variables['Build.SourceVersion']) ]
   steps:
   - script: |
       curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain $RUSTUP_TOOLCHAIN
@@ -62,6 +64,4 @@ jobs:
       git rev-parse HEAD
       echo lol
       git diff-tree --no-commit-id --name-only -r $REVISION
-    variables:
-      revision: $[ coalesce(variables['System.PullRequest.TargetBranch'], variables['Build.SourceVersion']) ]
 
