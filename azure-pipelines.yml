@@ -3,9 +3,9 @@ stages:
   parameters:
     minrust: false
     codecov_token: $(CODECOV_TOKEN)
-- stage: pre-commit
+- stage: pre_commit
   jobs:
-  - job: pre-commit
+  - job: pre_commit
     pool:
       vmImage: ubuntu-latest
     steps:
