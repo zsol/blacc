@@ -1,3 +1,3 @@
 - spawn blackd automatically and reuse it
 - stream inputs instead of allocating them all into memory
-- tests and CI
+- pyi

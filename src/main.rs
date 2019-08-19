@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use clap::{crate_version, App, Arg};
+use clap::{crate_version, App, Arg, ArgMatches};
 use error_chain::{error_chain, ChainedError};
 use futures::{
     future::{self, join_all, Either},
@@ -368,7 +368,7 @@ fn collect_sources(
     )
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, PartialEq)]
 struct BlackConfig {
     exclude: Option<String>,
     include: Option<String>,
@@ -379,7 +379,7 @@ struct BlackConfig {
     fast: Option<bool>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 struct BlaccConfig {
     url: String,
     quiet: bool,
@@ -387,7 +387,49 @@ struct BlaccConfig {
     srcs: Vec<String>,
 }
 
-fn read_config(path: String) -> Result<BlackConfig> {
+#[test]
+fn test_read_config() {
+    use tempfile::tempdir;
+
+    let contents = r"
+    [tool.black]
+    line-length = 42
+    target-version = ['py36', 'py37']
+    include = 'lol'
+    exclude = '''
+    /(
+        hello
+        # some comment
+        | hallo
+    )/
+    '''
+    ";
+    let exclude = r"
+    /(
+        hello
+        # some comment
+        | hallo
+    )/
+    "
+    .trim_start_matches('\n')
+    .to_string();
+    let tmpdir = tempdir().unwrap();
+    let tomlfile = tmpdir.path().join("lol.toml");
+    std::fs::write(&tomlfile, contents.as_bytes()).unwrap();
+    let config = read_config(tomlfile.to_str().unwrap()).unwrap();
+    assert_eq!(
+        config,
+        BlackConfig {
+            line_length: Some(42),
+            target_version: Some(vec!["py36".to_string(), "py37".to_string()]),
+            include: Some("lol".to_string()),
+            exclude: Some(exclude),
+            ..Default::default()
+        }
+    );
+}
+
+fn read_config<P: AsRef<Path>>(path: P) -> Result<BlackConfig> {
     std::fs::read_to_string(path)
         .chain_err(|| "Unable to read config file")
         .and_then(|contents| {
@@ -420,23 +462,143 @@ fn read_config(path: String) -> Result<BlackConfig> {
         })
 }
 
-fn make_config() -> Result<(BlaccConfig, BlackConfig)> {
-    let matches =
-        App::new("Black Client")
-            .version(crate_version!())
-            .arg(Arg::with_name("verbose").short("-v").help("Set verbosity").long_help("Specify multiple times to increase verbosity. -v = info level logs, -vv = debug logs, -vvv = everything").multiple(true))
-            .arg(Arg::with_name("quiet").short("q").help("Silence all logs").conflicts_with("quiet"))
-            .arg(Arg::with_name("url").required(true).long("url").short("u").takes_value(true).help("URL of a running `blackd` server"))
-            .arg(Arg::with_name("exclude").long("exclude").help("A regular expression that matches files and directories that should be excluded on recursive searches").long_help("An empty value means no paths are excluded. Exclusions are calculated first, inclusions later.").takes_value(true).default_value(DEFAULT_EXCLUDE))
-            .arg(Arg::with_name("include").long("include").help("A regular expression that matches files and directories that should be included on recursive searches").long_help("An empty value means all files are included. Exclusions are calculated first, inclusions later.").takes_value(true).default_value(DEFAULT_INCLUDE))
-            .arg(Arg::with_name("fast").long("fast").help("Skip sanity checks").conflicts_with("safe"))
-            .arg(Arg::with_name("safe").long("safe").help("Run sanity checks after formatting").conflicts_with("fast"))
-            .arg(Arg::with_name("skip-string-normalization").short("S").long("skip-string-normalization").help("Don't normalize string quotes or prefixes"))
-            .arg(Arg::with_name("target-version").short("t").long("target-version").takes_value(true).use_delimiter(true).help("Python versions that should be supported by Black's output.").possible_values(&["py27", "py33", "py34", "py35", "py36", "py37", "py38"]))
-            .arg(Arg::with_name("line-length").short("l").long("line-length").takes_value(true).help("How many characters per line to allow"))
-            .arg(Arg::with_name("config-file").help("Path to TOML file containing black's configuration").long("config-file").takes_value(true))
-            .arg(Arg::with_name("src").help("Input source(s) to be formatted").long_help("Input source(s) to be formatted. A single `-` means stdin.").takes_value(true).multiple(true).empty_values(false))
-            .get_matches();
+#[test]
+fn test_no_args_is_error() {
+    let app = make_app();
+    let r = app.get_matches_from_safe(Vec::<String>::default());
+    assert!(r.is_err());
+}
+
+#[test]
+fn test_default_config() {
+    let app = make_app();
+    let url = "https://localhost:45848";
+    let r = app
+        .get_matches_from_safe(vec!["blacc", "--url", url])
+        .unwrap();
+    let (blacc, black) = make_config(r).unwrap();
+    assert_eq!(blacc.url, url);
+    assert!(blacc.srcs.is_empty());
+    assert!(!blacc.quiet);
+    assert_eq!(blacc.verbosity, 0);
+    assert_eq!(
+        black,
+        BlackConfig {
+            include: Some(DEFAULT_INCLUDE.to_string()),
+            exclude: Some(DEFAULT_EXCLUDE.to_string()),
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
+fn test_all_options() {
+    let app = make_app();
+    let url = "https://localhost:45848".to_string();
+    let exclude = "exclude".to_string();
+    let include = "include".to_string();
+    let target_version = "py36,py37";
+    let line_length = "45";
+    let srcs = vec!["hello".to_string(), "hallo".to_string()];
+    let r = app
+        .get_matches_from_safe(vec![
+            "blacc",
+            "--url",
+            &url,
+            "--exclude",
+            &exclude,
+            "--include",
+            &include,
+            "--target-version",
+            target_version,
+            "--line-length",
+            line_length,
+            "-vv",
+            // "--pyi",
+            "--fast",
+            "-S",
+            "hello",
+            "hallo",
+        ])
+        .unwrap();
+    let (blacc, black) = make_config(r).unwrap();
+    assert_eq!(
+        blacc,
+        BlaccConfig {
+            url,
+            quiet: false,
+            verbosity: 2,
+            srcs,
+        }
+    );
+    assert_eq!(
+        black,
+        BlackConfig {
+            include: Some(include),
+            exclude: Some(exclude),
+            line_length: Some(u64::from_str(line_length).unwrap()),
+            fast: Some(true),
+            pyi: None,
+            skip_string_normalization: Some(true),
+            target_version: Some(
+                target_version.split(',').map(str::to_owned).collect()
+            )
+        }
+    )
+}
+
+#[test]
+fn test_config_from_file() {
+    use tempfile::tempdir;
+    let app = make_app();
+    let url = "https://localhost:45848".to_string();
+    let contents = r"
+    [tool.black]
+    line-length = 42
+    exclude = 'lol'
+    ";
+    let tmpdir = tempdir().unwrap();
+    let conffile = tmpdir.path().join("lol.toml");
+    std::fs::write(&conffile, contents.as_bytes()).unwrap();
+    let r = app
+        .get_matches_from_safe(vec![
+            "blacc",
+            "--url",
+            &url,
+            "--config-file",
+            conffile.to_str().unwrap(),
+        ])
+        .unwrap();
+    let (_, config) = make_config(r).unwrap();
+    assert_eq!(
+        config,
+        BlackConfig {
+            exclude: Some("lol".to_string()),
+            line_length: Some(42),
+            include: Some(DEFAULT_INCLUDE.to_string()),
+            ..Default::default()
+        }
+    );
+}
+
+fn make_app<'a, 'b>() -> App<'a, 'b> {
+    App::new("Black Client")
+        .version(crate_version!())
+        .arg(Arg::with_name("verbose").short("-v").help("Set verbosity").long_help("Specify multiple times to increase verbosity. -v = info level logs, -vv = debug logs, -vvv = everything").multiple(true))
+        .arg(Arg::with_name("quiet").short("q").help("Silence all logs").conflicts_with("quiet"))
+        .arg(Arg::with_name("url").required(true).long("url").short("u").takes_value(true).help("URL of a running `blackd` server"))
+        .arg(Arg::with_name("exclude").long("exclude").help("A regular expression that matches files and directories that should be excluded on recursive searches").long_help("An empty value means no paths are excluded. Exclusions are calculated first, inclusions later.").takes_value(true).default_value(DEFAULT_EXCLUDE))
+        .arg(Arg::with_name("include").long("include").help("A regular expression that matches files and directories that should be included on recursive searches").long_help("An empty value means all files are included. Exclusions are calculated first, inclusions later.").takes_value(true).default_value(DEFAULT_INCLUDE))
+        .arg(Arg::with_name("fast").long("fast").help("Skip sanity checks").conflicts_with("safe"))
+        .arg(Arg::with_name("safe").long("safe").help("Run sanity checks after formatting").conflicts_with("fast"))
+        .arg(Arg::with_name("skip-string-normalization").short("S").long("skip-string-normalization").help("Don't normalize string quotes or prefixes"))
+        .arg(Arg::with_name("target-version").short("t").long("target-version").takes_value(true).use_delimiter(true).help("Python versions that should be supported by Black's output.").possible_values(&["py27", "py33", "py34", "py35", "py36", "py37", "py38"]))
+        .arg(Arg::with_name("line-length").short("l").long("line-length").takes_value(true).help("How many characters per line to allow"))
+        .arg(Arg::with_name("config-file").help("Path to TOML file containing black's configuration").long("config-file").takes_value(true))
+        .arg(Arg::with_name("src").help("Input source(s) to be formatted").long_help("Input source(s) to be formatted. A single `-` means stdin.").takes_value(true).multiple(true).empty_values(false))
+}
+
+fn make_config(matches: ArgMatches) -> Result<(BlaccConfig, BlackConfig)> {
     let config_file = matches.value_of("config-file").map(|x| x.to_owned());
     let mut config = match config_file {
         Some(file) => read_config(file)?,
@@ -463,6 +625,18 @@ fn make_config() -> Result<(BlaccConfig, BlackConfig)> {
     if matches.is_present("fast") {
         config.fast = Some(true);
     }
+    if matches.is_present("skip-string-normalization") {
+        config.skip_string_normalization = Some(true);
+    }
+    if matches.is_present("target-version") {
+        config.target_version = Some(
+            matches
+                .values_of("target-version")
+                .unwrap()
+                .map(str::to_string)
+                .collect(),
+        );
+    }
 
     Ok((
         BlaccConfig {
@@ -475,10 +649,12 @@ fn make_config() -> Result<(BlaccConfig, BlackConfig)> {
     ))
 }
 
+#[cfg_attr(tarpaulin, skip)]
 fn run() -> Result<()> {
     FD_LIMIT.store(get_fd_limit().unwrap_or(100), Ordering::Relaxed);
+    let matches = make_app().get_matches();
     let (config, black_config) =
-        make_config().chain_err(|| "Unable to set up configuration")?;
+        make_config(matches).chain_err(|| "Unable to set up configuration")?;
     let logging = stderrlog::new()
         .module(module_path!())
         .quiet(config.quiet)
@@ -582,6 +758,7 @@ fn format_bytes(
         })
 }
 
+#[cfg_attr(tarpaulin, skip)]
 fn main() {
     if let Err(ref e) = run() {
         println!("error: {}", e);
