@@ -3,6 +3,7 @@ stages:
   parameters:
     minrust: false
     codecov_token: $(CODECOV_TOKEN)
+    single_threaded: true
 - stage: pre_commit
   jobs:
   - job: pre_commit
