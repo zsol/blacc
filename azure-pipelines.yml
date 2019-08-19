@@ -10,7 +10,7 @@ stages:
     steps:
     - template: azure/install-rust.yml@templates
       parameters:
-        rust: nightly
+        rust: beta
         components:
         - rustfmt
         - clippy
