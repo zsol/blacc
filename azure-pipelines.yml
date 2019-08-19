@@ -2,6 +2,7 @@ stages:
 - template: azure/stages.yml@templates
   parameters:
     minrust: false
+    codecov_token: $(CODECOV_TOKEN)
 - stage: pre-commit
   jobs:
   - job: pre-commit
