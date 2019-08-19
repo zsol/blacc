@@ -2,9 +2,9 @@ stages:
 - template: azure/stages.yml@templates
   parameters:
     minrust: false
-- stage: lint
+- stage: pre-commit
   jobs:
-  - job: lint
+  - job: pre-commit
     pool:
       vmImage: ubuntu-latest
     steps:
