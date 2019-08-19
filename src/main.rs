@@ -293,11 +293,19 @@ fn test_walk_dir() {
     let exclude_file = exclude_dir.join("include.file");
     let include_file = root.join("include.file");
     let include_nested_file = some_dir.join("include.file");
+    let not_include_file = some_dir.join("lol");
 
     for dir in [exclude_dir, some_dir].iter() {
         create_dir(dir).unwrap();
     }
-    for f in [&exclude_file, &include_file, &include_nested_file].iter() {
+    for f in [
+        &exclude_file,
+        &include_file,
+        &include_nested_file,
+        &not_include_file,
+    ]
+    .iter()
+    {
         File::create(f).unwrap();
     }
     let mut runtime = tokio::runtime::Runtime::new().unwrap();
