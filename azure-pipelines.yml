@@ -10,7 +10,6 @@ stages:
     variables:
       cargo_incremental: 0
       rustflags: -Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Zno-landing-pads
-      codecov_token: $(CODECOV_TOKEN)
     steps:
     - template: azure/install-rust.yml@templates
       parameters:
@@ -27,6 +26,8 @@ stages:
         ./grcov ccov.zip -s . -t lcov --llvm --branch --ignore-not-existing --ignore-dir "/*" -o lcov.info
         bash <(curl -s https://codecov.io/bash) -f lcov.info
       displayName: collect coverage
+      env:
+        CODECOV_TOKEN: $(CODECOV_TOKEN)
 - stage: pre_commit
   jobs:
   - job: pre_commit
