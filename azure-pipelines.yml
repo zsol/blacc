@@ -3,6 +3,7 @@ stages:
   parameters:
     minrust: false
 - stage: coverage
+  dependsOn: []
   jobs:
   - job: grcov
     pool:
@@ -31,6 +32,7 @@ stages:
       env:
         CODECOV_TOKEN: $(CODECOV_TOKEN)
 - stage: pre_commit
+  dependsOn: []
   jobs:
   - job: pre_commit
     pool:
