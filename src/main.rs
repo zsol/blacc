@@ -649,10 +649,26 @@ fn make_config(matches: ArgMatches) -> Result<(BlaccConfig, BlackConfig)> {
     ))
 }
 
-#[cfg_attr(tarpaulin, skip)]
-fn run() -> Result<()> {
+#[test]
+fn test_run() {
+    use tempfile::tempdir;
+    let tmp = tempdir().unwrap();
+    let f = tmp.path().join("lol.py");
+    std::fs::write(&f, "print('hello')").unwrap();
+    let matches = make_app()
+        .get_matches_from_safe(vec![
+            "blacc",
+            "--url",
+            "https://localhost:45484",
+            &f.to_str().unwrap(),
+        ])
+        .unwrap();
+    let r = run(matches);
+    assert!(r.is_ok());
+}
+
+fn run(matches: ArgMatches) -> Result<()> {
     FD_LIMIT.store(get_fd_limit().unwrap_or(100), Ordering::Relaxed);
-    let matches = make_app().get_matches();
     let (config, black_config) =
         make_config(matches).chain_err(|| "Unable to set up configuration")?;
     let logging = stderrlog::new()
@@ -760,7 +776,8 @@ fn format_bytes(
 
 #[cfg_attr(tarpaulin, skip)]
 fn main() {
-    if let Err(ref e) = run() {
+    let matches = make_app().get_matches();
+    if let Err(ref e) = run(matches) {
         println!("error: {}", e);
         for e in e.iter().skip(1) {
             println!("caused by: {}", e);
