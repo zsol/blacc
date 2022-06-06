@@ -21,4 +21,4 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
-hyper = "0.12.33"
+hyper = "0.14.5"
